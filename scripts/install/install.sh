@@ -2,7 +2,7 @@
 # install.sh — OpenJarvis curl-pipe-bash installer.
 #
 # Usage:
-#   curl -fsSL https://openjarvis.ai/install.sh | bash
+#   curl -fsSL https://open-jarvis.github.io/OpenJarvis/install.sh | bash
 #
 # Flags (only used in tests / power users):
 #   --no-bg-orchestrator   Skip the detached background orchestrator
@@ -49,9 +49,7 @@ OpenJarvis runs on Windows via WSL2. Two paths:
 
      Open the Ubuntu shell that gets installed, then re-run:
 
-       curl -fsSL https://openjarvis.ai/install.sh | bash
-
-     (or the github mirror — see README if openjarvis.ai is down.)
+       curl -fsSL https://open-jarvis.github.io/OpenJarvis/install.sh | bash
 
   2. Desktop app — download the .exe from the Releases page:
      https://github.com/open-jarvis/OpenJarvis/releases

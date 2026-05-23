@@ -34,8 +34,10 @@ OpenJarvis is that stack. It is a framework for local-first personal AI, built a
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://openjarvis.ai/install.sh | bash
+curl -fsSL https://open-jarvis.github.io/OpenJarvis/install.sh | bash
 ```
+
+The installer handles everything for you — including [uv](https://docs.astral.sh/uv/), the Python venv, Ollama, and a small starter model. You don't need to install anything first.
 
 **Windows:** the installer is a `bash` script and won't run in PowerShell or `cmd`. Pick one of:
 
@@ -44,17 +46,12 @@ curl -fsSL https://openjarvis.ai/install.sh | bash
   wsl --install -d Ubuntu-24.04
   ```
   Open the Ubuntu shell that gets installed, then follow [WSL2 install instructions](https://open-jarvis.github.io/OpenJarvis/getting-started/wsl2/).
-- **Desktop app** — download the `.exe` from the [Releases page](https://github.com/open-jarvis/OpenJarvis/releases) for the GUI experience, no terminal required.
+- **Desktop app** — download the `.exe` from the [Releases page](https://github.com/open-jarvis/OpenJarvis/releases) for the GUI experience, no terminal required. **Prerequisite:** the desktop app expects [uv](https://docs.astral.sh/uv/) to be installed already — if it isn't, install it first in PowerShell, then launch the app:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
 
-> **If `curl` fails on `openjarvis.ai` with `sslv3 alert handshake failure`** ([issue #337](https://github.com/open-jarvis/OpenJarvis/issues/337)), use the GitHub mirror until the domain is restored:
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/open-jarvis/OpenJarvis/main/scripts/install/install.sh | bash
-> ```
->
-> Same script, served straight from this repo. The installer itself fetches everything else (uv, the project source, Ollama) from independent CDNs, so the rest of install proceeds normally.
-
-That's it. The installer handles everything: uv, the Python venv, Ollama, and pulling a small starter model. About 3 minutes on a typical broadband connection. Then:
+About 3 minutes on a typical broadband connection. Then:
 
 ```bash
 jarvis
@@ -69,7 +66,7 @@ The Rust extension and bigger models continue downloading in the background whil
 ## Quick Start
 
 ```bash
-curl -fsSL https://openjarvis.ai/install.sh | bash
+curl -fsSL https://open-jarvis.github.io/OpenJarvis/install.sh | bash
 jarvis
 ```
 
