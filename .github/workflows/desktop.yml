@@ -66,9 +66,12 @@ jobs:
       - name: Create frontend dist stub
         run: mkdir -p frontend/dist && echo '<html><body></body></html>' > frontend/dist/index.html
 
-      - name: Cargo check
+      # `cargo test` builds the crate (same coverage as the old `cargo check`)
+      # and runs the unit tests, including the #331 uv-sync error-formatting
+      # helpers. Static command, no untrusted input — no injection surface.
+      - name: Cargo test
         working-directory: frontend/src-tauri
-        run: cargo check
+        run: cargo test
 
   # Remove stale artifacts from the desktop-latest pre-release so that
   # only the current build's files are available for download.
