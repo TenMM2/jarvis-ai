@@ -46,7 +46,7 @@ The installer handles everything for you — including [uv](https://docs.astral.
   wsl --install -d Ubuntu-24.04
   ```
   Open the Ubuntu shell that gets installed, then follow [WSL2 install instructions](https://open-jarvis.github.io/OpenJarvis/getting-started/wsl2/).
-- **Desktop app** — download the `.exe` from the [Releases page](https://github.com/open-jarvis/OpenJarvis/releases) for the GUI experience, no terminal required. **Prerequisite:** the desktop app expects [uv](https://docs.astral.sh/uv/) to be installed already — if it isn't, install it first in PowerShell, then launch the app:
+- **Desktop app** — download the [Windows installer (`.exe`)](https://github.com/open-jarvis/OpenJarvis/releases/download/desktop-v1.0.2/OpenJarvis_1.0.1_x64-setup.exe) from the latest [desktop release](https://github.com/open-jarvis/OpenJarvis/releases/tag/desktop-v1.0.2) (macOS `.dmg` and Linux `.deb`/`.rpm`/`.AppImage` are there too) for the GUI experience, no terminal required. **Prerequisite:** the desktop app expects [uv](https://docs.astral.sh/uv/) to be installed already — if it isn't, install it first in PowerShell, then launch the app:
   ```powershell
   powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
   ```
