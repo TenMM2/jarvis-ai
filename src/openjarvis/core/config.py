@@ -1371,6 +1371,9 @@ class A2AConfig:
     """Agent-to-Agent protocol settings."""
 
     enabled: bool = False
+    # Bearer token required for inbound A2A requests. Empty = unauthenticated
+    # (only safe on a trusted network). See ``A2AServer(auth_token=...)``.
+    auth_token: str = ""
 
 
 @dataclass(slots=True)

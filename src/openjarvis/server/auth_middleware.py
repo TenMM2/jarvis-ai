@@ -73,3 +73,29 @@ def check_bind_safety(host: str, *, api_key: str) -> None:
             host,
         )
         sys.exit(1)
+
+
+def websocket_authorized(websocket, expected_key: str) -> bool:  # noqa: ANN001
+    """Return ``True`` if a WebSocket connection presents the expected key.
+
+    ``AuthMiddleware`` is a ``BaseHTTPMiddleware`` and never sees WebSocket
+    upgrade requests, so streaming endpoints must check the token themselves
+    in the handshake before calling ``websocket.accept()``.
+
+    When *expected_key* is empty, authentication is disabled (the loopback /
+    local-only default, matching :class:`AuthMiddleware`) and all connections
+    are allowed. The token may be supplied either as a ``?token=`` query
+    parameter — browsers cannot set headers on a WebSocket handshake — or via
+    an ``Authorization: Bearer <key>`` header for programmatic clients.
+    """
+    if not expected_key:
+        return True
+    token = websocket.query_params.get("token", "")
+    if not token:
+        auth = websocket.headers.get("authorization", "")
+        scheme, _, value = auth.partition(" ")
+        if scheme.lower() == "bearer":
+            token = value
+    if not token:
+        return False
+    return secrets.compare_digest(token, expected_key)
