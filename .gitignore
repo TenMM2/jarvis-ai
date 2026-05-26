@@ -39,6 +39,9 @@ Thumbs.db
 # Secrets
 .env
 .env.*
+# ...but keep checked-in example/templates (never contain real secrets)
+!.env.example
+!**/.env.example
 
 # Project
 *.sqlite
