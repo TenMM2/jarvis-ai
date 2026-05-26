@@ -223,6 +223,9 @@ def create_app(
     app.state.agent_manager = agent_manager
     app.state.agent_scheduler = agent_scheduler
     app.state.session_start = time.time()
+    # Exposed so WebSocket handlers can authenticate the handshake (the HTTP
+    # AuthMiddleware never sees WS upgrade requests). Empty = auth disabled.
+    app.state.api_key = api_key
 
     # Wire up trace store if traces are enabled
     app.state.trace_store = None
