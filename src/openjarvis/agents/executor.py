@@ -404,6 +404,21 @@ class AgentExecutor:
                 state_kwargs["memory_backend"] = getattr(
                     self._system, "memory_backend", None
                 )
+            # Wire SOUL.md / MEMORY.md / USER.md persona files into persistent
+            # agents, mirroring the one-shot `jarvis ask` path so they no
+            # longer apply to CLI calls only (#376).
+            cfg = getattr(self._system, "config", None)
+            if cfg is not None and _accepts("prompt_builder"):
+                from openjarvis.prompt.builder import SystemPromptBuilder
+
+                state_kwargs["prompt_builder"] = SystemPromptBuilder(
+                    agent_template=getattr(
+                        cfg.agent, "default_system_prompt", ""
+                    )
+                    or "",
+                    memory_files_config=cfg.memory_files,
+                    system_prompt_config=cfg.system_prompt,
+                )
 
         try:
             agent_instance = agent_cls(
