@@ -69,6 +69,27 @@ _BROWSER_SUB_TOOLS = {
 }
 
 
+def _resolve_memory_backend(config: Any) -> Any:
+    """Instantiate the configured memory backend, or None if unavailable.
+
+    Mirrors serve.py's setup so an agent tick that runs through the server
+    can actually use its memory_* tools. Returns None (so the tools degrade
+    gracefully) when memory context is disabled or the backend can't load.
+    """
+    if config is None or not getattr(config.agent, "context_from_memory", False):
+        return None
+    try:
+        import openjarvis.tools.storage  # noqa: F401
+        from openjarvis.core.registry import MemoryRegistry
+
+        key = config.memory.default_backend
+        if MemoryRegistry.contains(key):
+            return MemoryRegistry.create(key, db_path=config.memory.db_path)
+    except Exception:
+        logger.debug("Lightweight system: memory backend init failed", exc_info=True)
+    return None
+
+
 class _LightweightSystem:
     """Minimal system facade for the executor — avoids rebuilding the
     full JarvisSystem (which picks a random model from Ollama)."""
@@ -77,7 +98,12 @@ class _LightweightSystem:
         self.engine = engine
         self.model = model
         self.config = config
-        self.memory_backend = None
+        # Wire the configured memory backend so an agent's memory_store /
+        # memory_retrieve tools work when the tick runs through the server.
+        # The executor injects system.memory_backend into those tools; this
+        # facade previously left it None, so they reported "No memory backend
+        # configured" even though the backend was configured and active.
+        self.memory_backend = _resolve_memory_backend(config)
 
 
 def _make_lightweight_system(
@@ -768,7 +794,16 @@ async def _stream_managed_agent(
 
     agent_id = agent_record["id"]
     config = agent_record.get("config", {})
-    model = config.get("model", getattr(engine, "_model", ""))
+    # Resolve the model: prefer the agent's own config, then the server's
+    # resolved model (app.state.model — what the engine was booted with),
+    # and only then the legacy engine._model attr. OllamaEngine takes the
+    # model per-call and exposes no _model attr, so without the app_state
+    # fallback this resolved to "" and Ollama 400'd on an empty model.
+    model = (
+        config.get("model")
+        or getattr(app_state, "model", None)
+        or getattr(engine, "_model", "")
+    )
     system_prompt = config.get("system_prompt")
     temperature = config.get("temperature", 0.7)
     max_tokens = config.get("max_tokens", 1024)
