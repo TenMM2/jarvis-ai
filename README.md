@@ -15,6 +15,12 @@
 
 ---
 
+<div align="center">
+  <video src="https://github.com/open-jarvis/OpenJarvis/releases/download/readme-media/openjarvis_demo_reel_v2.mp4" controls width="100%"></video>
+</div>
+
+---
+
 > **[Documentation](https://open-jarvis.github.io/OpenJarvis/)**
 >
 > **[Project Site](https://scalingintelligence.stanford.edu/blogs/openjarvis/)**
