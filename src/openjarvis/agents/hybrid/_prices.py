@@ -19,7 +19,17 @@ PRICES: dict[str, tuple[float, float]] = {
     "gpt-5-mini":                  (0.25, 2.00),
     "gpt-5-mini-2025-08-07":       (0.25, 2.00),
     "gpt-4o":                      (0.15, 0.60),
+    # Gemini Developer API prices (USD per 1M tokens), 2025-12 list price.
+    # 2.5 Pro uses tiered pricing (>200K context = $2.50/$15); we charge the
+    # low-context tier since GAIA / SWE-bench prompts stay well under 200K.
     "gemini-2.5-pro":              (1.25, 10.0),
+    "gemini-2.5-flash":            (0.30, 2.50),
+    "gemini-2.5-flash-lite":       (0.10, 0.40),
+    # OpenRouter slugs (used by toolorchestra paper-match pool).
+    # Prices are OpenRouter list (USD/1M tokens), 2026-05 snapshot.
+    "qwen/qwen-2.5-coder-32b-instruct":  (0.08, 0.18),
+    "qwen/qwen3-32b":                    (0.10, 0.30),
+    "meta-llama/llama-3.3-70b-instruct": (0.13, 0.39),
 }
 
 # Models whose API rejects an explicit `temperature` param — callers should
@@ -44,3 +54,17 @@ def supports_temperature(model: str) -> bool:
 def is_gpt5_family(model: str) -> bool:
     """GPT-5 series requires ``max_completion_tokens`` and forced temp=1."""
     return model.startswith("gpt-5")
+
+
+def is_reasoning_model(model: str) -> bool:
+    """Models that consume the output-token budget on hidden chain-of-thought
+    before emitting visible answer text. At max_tokens=4096 these silently
+    truncate with empty answers on GAIA (26/100 GPT-5, 18/100 Gemini Pro)."""
+    m = (model or "").lower()
+    return is_gpt5_family(model) or "gemini-2.5-pro" in m
+
+
+def default_max_output_tokens(model: str) -> int:
+    """Sane default for ``max_tokens`` per cloud call. Reasoning models get
+    a larger budget so their hidden thinking doesn't crowd out the answer."""
+    return 16384 if is_reasoning_model(model) else 4096

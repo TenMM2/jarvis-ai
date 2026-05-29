@@ -26,9 +26,9 @@ How the hybrid harness wires it (and what we mirror here):
 - ``ranker_model`` / ``fuser_model`` (default: ``cloud_model`` for both)
 - ``max_tokens`` (default 2048), ``temperature`` (default 0.7)
 
-Requires the Archon library (cloned at
-``hybrid-local-cloud-compute/external/Archon`` — add its ``src`` to
-``PYTHONPATH`` or pip-install editable). Import is lazy.
+Requires the Archon library from https://github.com/Stanford-ILIAD/Archon
+— either pip-install editable or set ``ARCHON_SRC`` to the checkout's
+``src/`` directory. Import is lazy.
 
 Ported from ``hybrid-local-cloud-compute/adapters/archon_adapter.py``.
 """
@@ -42,7 +42,15 @@ import types
 from typing import Any, Dict, List, Optional, Tuple
 
 from openjarvis.agents._stubs import AgentContext
-from openjarvis.agents.hybrid._base import LocalCloudAgent, _record_event
+from openjarvis.agents.hybrid._base import (
+    WEB_SEARCH_COST_PER_CALL,
+    LocalCloudAgent,
+    _bump_cloud_calls,
+    _bump_local_calls,
+    _record_event,
+    build_web_search_tool,
+    web_search_cfg,
+)
 from openjarvis.agents.hybrid._prices import (
     NO_TEMP_PREFIXES,
 )
@@ -79,13 +87,11 @@ def _stub_archon_imports() -> None:
 
 
 def _add_archon_to_path() -> None:
-    """Locate Archon's ``src`` dir. The hybrid clone is the default location;
-    override with ``ARCHON_SRC`` env var if Archon is installed elsewhere."""
-    archon_src = os.environ.get(
-        "ARCHON_SRC",
-        "/matx/u/aspark/hybrid-local-cloud-compute/external/Archon/src",
-    )
-    if archon_src not in sys.path and os.path.isdir(archon_src):
+    """Locate Archon's ``src`` dir. Set ``ARCHON_SRC`` to point at your
+    Archon checkout (``<repo>/src``); otherwise we assume ``archon`` is on
+    ``sys.path`` already (e.g. ``pip install`` from a local clone)."""
+    archon_src = os.environ.get("ARCHON_SRC")
+    if archon_src and os.path.isdir(archon_src) and archon_src not in sys.path:
         sys.path.insert(0, archon_src)
 
 
@@ -125,8 +131,11 @@ def _tally() -> Dict[str, int]:
         counts = {
             "cloud_prompt": 0, "cloud_completion": 0,
             "local_prompt": 0, "local_completion": 0,
+            "n_web_searches": 0,
         }
         _TALLY_LOCAL.counts = counts
+    # Backfill for older threads that started before we added the key.
+    counts.setdefault("n_web_searches", 0)
     return counts
 
 
@@ -134,7 +143,22 @@ def _reset_tally() -> None:
     _TALLY_LOCAL.counts = {
         "cloud_prompt": 0, "cloud_completion": 0,
         "local_prompt": 0, "local_completion": 0,
+        "n_web_searches": 0,
     }
+
+
+# Per-thread web_search tool: when set, the Anthropic generator declares
+# it on every call. Set inside ``_run_paradigm`` before invoking Archon
+# so the ranker/fuser passes pick it up; cleared in ``finally``.
+_WS_LOCAL = threading.local()
+
+
+def _set_anthropic_web_search(tool: Optional[Dict[str, Any]]) -> None:
+    _WS_LOCAL.tool = tool
+
+
+def _get_anthropic_web_search() -> Optional[Dict[str, Any]]:
+    return getattr(_WS_LOCAL, "tool", None)
 
 
 def _make_local_generator(local_endpoint: str, local_model: str):
@@ -153,6 +177,7 @@ def _make_local_generator(local_endpoint: str, local_model: str):
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
+            _bump_local_calls()
         except Exception as e:
             _record_event({
                 "kind": "archon_local_gen_error",
@@ -205,6 +230,7 @@ def _wrap_archon_cloud_generators() -> None:
             kwargs["max_completion_tokens"] = max_tokens
         t0 = _time.time()
         resp = client.chat.completions.create(**kwargs)
+        _bump_cloud_calls()
         u = resp.usage
         if u:
             _tally()["cloud_prompt"] += getattr(u, "prompt_tokens", 0) or 0
@@ -237,13 +263,20 @@ def _wrap_archon_cloud_generators() -> None:
         )
         if not model.startswith(NO_TEMP_PREFIXES):
             kwargs["temperature"] = temperature
+        ws_tool = _get_anthropic_web_search()
+        if ws_tool is not None:
+            kwargs["tools"] = [ws_tool]
         t0 = _time.time()
         resp = client.messages.create(**kwargs)
+        _bump_cloud_calls()
         text = "".join(b.text for b in resp.content if hasattr(b, "text"))
         u = resp.usage
         if u:
             _tally()["cloud_prompt"] += getattr(u, "input_tokens", 0) or 0
             _tally()["cloud_completion"] += getattr(u, "output_tokens", 0) or 0
+        srv = getattr(u, "server_tool_use", None) if u else None
+        n_searches = getattr(srv, "web_search_requests", 0) if srv else 0
+        _tally()["n_web_searches"] += int(n_searches)
         _record_event({
             "kind": "archon_cloud_anthropic",
             "model": model,
@@ -252,6 +285,8 @@ def _wrap_archon_cloud_generators() -> None:
             "response": text.strip(),
             "tokens_in": getattr(u, "input_tokens", 0) if u else 0,
             "tokens_out": getattr(u, "output_tokens", 0) if u else 0,
+            "n_web_searches": int(n_searches),
+            "tools_declared": kwargs.get("tools"),
             "latency_s": _time.time() - t0,
             "ts": _time.time(),
         })
@@ -355,14 +390,18 @@ def _presets():
                 "samples": 1,
             }],
         ],
-        "single_local": lambda K, local_model, *_a, **_kw: [
+        # ``single_local`` honors the cfg ``max_tokens`` (passed positionally
+        # like ``ensemble_rank_fuse``). Previously it hard-coded 2048, which
+        # cut Qwen off mid-reasoning before it could emit the GAIA
+        # ``FINAL ANSWER:`` line — the scorer then had nothing to extract.
+        "single_local": lambda K, local_model, ranker_model, fuser_model, max_tokens, temperature: [
             [{
                 "type": "generator",
                 "model": local_model,
                 "model_type": "vllm_local",
                 "top_k": 1,
                 "temperature": 0.0,
-                "max_tokens": 2048,
+                "max_tokens": max_tokens,
                 "samples": 1,
             }],
         ],
@@ -430,6 +469,14 @@ class ArchonAgent(LocalCloudAgent):
         archon_cfg = {"name": f"hybrid-archon-{arch}", "layers": layers}
 
         _reset_tally()
+        # Web_search opt-in: when enabled, declare the native server-side
+        # tool on Anthropic ranker/fuser passes (via thread-local). The
+        # local proposers run on vLLM and don't see it.
+        ws_enabled, ws_max_uses = web_search_cfg(cfg)
+        if ws_enabled:
+            _set_anthropic_web_search(build_web_search_tool(ws_max_uses))
+        else:
+            _set_anthropic_web_search(None)
         archon = Archon(archon_cfg)
 
         try:
@@ -437,8 +484,16 @@ class ArchonAgent(LocalCloudAgent):
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": input},
             ])
-        except Exception as e:
-            answer = f"[archon error: {e!r}]"
+        except Exception:
+            # Re-raise so the base ``run()`` / runner's ``_run_one_inner``
+            # records this in the row's ``error`` field instead of stashing
+            # the exception string in ``answer`` (where it scores as a wrong
+            # answer and never counts toward ``n_err``). Anthropic 529
+            # overloads on the ranker/fuser pass were silently masked this
+            # way — they are infra failures, not model misses.
+            raise
+        finally:
+            _set_anthropic_web_search(None)
 
         if isinstance(answer, list):
             answer = answer[-1] if answer else ""
@@ -446,16 +501,21 @@ class ArchonAgent(LocalCloudAgent):
 
         cp = _tally()["cloud_prompt"]
         cc = _tally()["cloud_completion"]
+        n_searches = _tally().get("n_web_searches", 0)
         cost = _cost_cloud(ranker_model, cp, cc)
         if fuser_model != ranker_model:
             # Conservative: charge both at the more expensive of the two.
             cost = max(cost, _cost_cloud(fuser_model, cp, cc))
+        cost += n_searches * WEB_SEARCH_COST_PER_CALL
 
         meta = {
             "tokens_local": _tally()["local_prompt"] + _tally()["local_completion"],
             "tokens_cloud": cp + cc,
             "cost_usd": cost,
             "turns": (K + 2) if arch == "ensemble_rank_fuse" else 1,
+            "web_search_uses": n_searches,
+            # GAIA: only ranker/fuser can hit web_search; proposers don't.
+            "tool_calls": int(n_searches),
             "traces": {
                 "architecture": arch,
                 "n_samples":    K,
@@ -463,6 +523,8 @@ class ArchonAgent(LocalCloudAgent):
                 "fuser_model":  fuser_model,
                 "local_model":  self._local_model,
                 "tokens_breakdown": dict(_tally()),
+                "web_search_enabled": ws_enabled,
+                "n_web_searches": n_searches,
             },
         }
         return answer, meta
@@ -566,6 +628,9 @@ class ArchonAgent(LocalCloudAgent):
             "tokens_cloud": total_tokens_cloud,
             "cost_usd": total_cost,
             "turns": sum(c["turns"] for c in candidates) + 1,
+            # SWE: total bash turns across the K candidate runs; ranker
+            # is a single text call with no tools.
+            "tool_calls": int(sum(c["turns"] for c in candidates)),
             "traces": {
                 "swe_mode": True,
                 "K": K,
