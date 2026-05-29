@@ -71,6 +71,11 @@ class TestDeriveBaseUrl:
         eng = SimpleNamespace(base_url="http://y/v1")
         assert _derive_openai_base_url(eng) == "http://y/v1"
 
+    def test_unwraps_wrapper_engine(self):
+        # InstrumentedEngine wraps the real engine at `_inner`; must unwrap.
+        wrapped = SimpleNamespace(_inner=SimpleNamespace(_host="http://localhost:11434"))
+        assert _derive_openai_base_url(wrapped) == "http://localhost:11434/v1"
+
     def test_none_when_unknown(self):
         assert _derive_openai_base_url(SimpleNamespace()) == ""
 
@@ -135,6 +140,14 @@ class TestRunGracefulDegradation:
         res = agent.run("do something")
         assert res.metadata.get("error") is True
         assert "opencode" in res.content.lower()
+
+    def test_unresolvable_provider_fails_clearly(self, tmp_path):
+        # No derivable base URL + bare model name -> clear error, not a 500
+        # (and we fail before spawning a server).
+        agent = OpenCodeAgent(SimpleNamespace(), "qwen3:8b", workspace=str(tmp_path))
+        res = agent.run("do something")
+        assert res.metadata.get("error") is True
+        assert "could not determine" in res.content.lower()
 
 
 class _FakeResp:

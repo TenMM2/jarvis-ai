@@ -42,18 +42,32 @@ def _derive_openai_base_url(engine: Any) -> str:
     """Best-effort OpenAI-compatible base URL for an OpenJarvis engine.
 
     HTTP engines (Ollama, vLLM, llama.cpp, SGLang, LM Studio, …) expose a
-    ``_host`` and serve an OpenAI-compatible API at ``<host>/v1``. Returns ""
-    when it cannot be derived (caller then requires an explicit base URL or a
-    pre-configured opencode provider).
+    ``_host`` and serve an OpenAI-compatible API at ``<host>/v1``. Engines are
+    often wrapped (e.g. ``InstrumentedEngine`` for telemetry stores the real
+    engine at ``_inner``), so we unwrap a few layers to find the host. Returns
+    "" when it cannot be derived (caller then needs an explicit base URL or a
+    ``provider/model`` that opencode already knows).
     """
-    for attr in ("openai_base_url", "base_url"):
-        val = getattr(engine, attr, "")
-        if val:
-            return str(val).rstrip("/")
-    host = getattr(engine, "_host", "") or getattr(engine, "host", "")
-    if host:
-        host = str(host).rstrip("/")
-        return host if host.endswith("/v1") else f"{host}/v1"
+    seen: set[int] = set()
+    cur = engine
+    for _ in range(6):
+        if cur is None or id(cur) in seen:
+            break
+        seen.add(id(cur))
+        for attr in ("openai_base_url", "base_url"):
+            val = getattr(cur, attr, "")
+            if val:
+                return str(val).rstrip("/")
+        host = getattr(cur, "_host", "") or getattr(cur, "host", "")
+        if host:
+            host = str(host).rstrip("/")
+            return host if host.endswith("/v1") else f"{host}/v1"
+        # Unwrap common wrapper attributes (InstrumentedEngine -> _inner, etc.)
+        cur = (
+            getattr(cur, "_inner", None)
+            or getattr(cur, "_engine", None)
+            or getattr(cur, "_wrapped", None)
+        )
     return ""
 
 
@@ -288,6 +302,27 @@ class OpenCodeAgent(BaseAgent):
     ) -> AgentResult:
         """Run a coding task through opencode and return the assistant result."""
         self._emit_turn_start(input)
+
+        # Resolve which opencode provider/model to address. Fail clearly rather
+        # than letting opencode 500 on an unregistered provider.
+        if self._provider_base_url:
+            model_spec = {"providerID": self._provider_id, "modelID": self._model_id}
+        elif "/" in self._model_id:
+            prov, _, mid = self._model_id.partition("/")
+            model_spec = {"providerID": prov, "modelID": mid}
+        else:
+            self._emit_turn_end(turns=1, error=True)
+            return AgentResult(
+                content=(
+                    f"OpenCodeAgent could not determine an opencode provider for "
+                    f"model {self._model_id!r}: no OpenAI-compatible base URL could "
+                    f"be derived from the engine. Pass provider_base_url=..., or use "
+                    f"a 'provider/model' that opencode already knows."
+                ),
+                turns=1,
+                metadata={"error": True},
+            )
+
         try:
             self._ensure_server()
         except RuntimeError as exc:
@@ -306,16 +341,9 @@ class OpenCodeAgent(BaseAgent):
 
                 body: dict = {
                     "agent": self._agent,
+                    "model": model_spec,
                     "parts": [{"type": "text", "text": input}],
                 }
-                if self._provider_base_url or "/" not in self._model_id:
-                    body["model"] = {
-                        "providerID": self._provider_id,
-                        "modelID": self._model_id,
-                    }
-                else:
-                    prov, _, mid = self._model_id.partition("/")
-                    body["model"] = {"providerID": prov, "modelID": mid}
 
                 resp = c.post(f"/session/{session_id}/message", json=body)
                 resp.raise_for_status()
