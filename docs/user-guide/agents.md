@@ -430,6 +430,16 @@ jarvis ask --agent opencode "Refactor the parser to use a state machine"
 !!! tip "Pass-through providers"
     If the `engine` has no derivable base URL, pass `model` as `provider/model` (e.g. `ollama/llama3`) and opencode resolves it from its own configuration — no `opencode.json` is written.
 
+!!! warning "Model capability matters"
+    opencode's agentic loop (planning + correct tool calls + multi-step
+    follow-through) needs a reasonably capable model. In testing, a **27B**
+    local model (Qwen3.5-27B served via vLLM) solved a 7-task coding suite
+    cleanly (create / edit / bug-fix / implement-to-pass-tests / multi-file,
+    verified by running the code and tests). An **8B** model (qwen3:8b) was
+    unreliable — malformed tool calls, syntactically broken code, and
+    half-finished tasks. Prefer a capable local model (or a cloud model) for
+    real coding work.
+
 ---
 
 ## OperativeAgent
