@@ -7,7 +7,6 @@ message shape captured from a live `opencode serve` session.
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 from openjarvis.agents.opencode import (
@@ -87,32 +86,43 @@ class TestAvailability:
         assert is_opencode_available() is False
 
 
-class TestProviderConfig:
-    def test_writes_provider(self, tmp_path):
-        agent = OpenCodeAgent(SimpleNamespace(_host="http://localhost:11434"),
-                              "qwen3:8b", workspace=str(tmp_path))
-        agent._write_provider_config()
-        cfg = json.loads((tmp_path / "opencode.json").read_text())
+class TestConfigBuilding:
+    def test_includes_provider_when_base_url(self, tmp_path):
+        cfg = OpenCodeAgent(SimpleNamespace(_host="http://localhost:11434"),
+                            "qwen3:8b", workspace=str(tmp_path))._build_config()
         prov = cfg["provider"]["openjarvis"]
         assert prov["npm"] == "@ai-sdk/openai-compatible"
         assert prov["options"]["baseURL"] == "http://localhost:11434/v1"
         assert "qwen3:8b" in prov["models"]
 
-    def test_merges_existing(self, tmp_path):
-        (tmp_path / "opencode.json").write_text(
-            json.dumps({"theme": "dark", "provider": {"other": {}}})
-        )
-        OpenCodeAgent(SimpleNamespace(_host="http://h:1"), "m",
-                      workspace=str(tmp_path))._write_provider_config()
-        cfg = json.loads((tmp_path / "opencode.json").read_text())
-        assert cfg["theme"] == "dark"  # preserved
-        assert "other" in cfg["provider"] and "openjarvis" in cfg["provider"]
+    def test_no_provider_when_no_base_url(self, tmp_path):
+        # Pass-through model -> rely on opencode's own provider; no provider block.
+        cfg = OpenCodeAgent(SimpleNamespace(), "ollama/llama3",
+                            workspace=str(tmp_path))._build_config()
+        assert "provider" not in cfg
 
-    def test_skips_when_no_base_url(self, tmp_path):
-        # No derivable base URL + pre-namespaced model -> rely on opencode's
-        # own provider; don't write a config.
-        OpenCodeAgent(SimpleNamespace(), "ollama/llama3",
-                      workspace=str(tmp_path))._write_provider_config()
+    def test_build_mode_permission_allows_edit_and_bash(self, tmp_path):
+        cfg = OpenCodeAgent(SimpleNamespace(_host="http://h:1"), "m",
+                            workspace=str(tmp_path), agent="build")._build_config()
+        assert cfg["permission"]["edit"] == "allow"
+        assert cfg["permission"]["bash"] == "allow"
+
+    def test_plan_mode_permission_denies_edit_and_bash(self, tmp_path):
+        cfg = OpenCodeAgent(SimpleNamespace(_host="http://h:1"), "m",
+                            workspace=str(tmp_path), agent="plan")._build_config()
+        assert cfg["permission"]["edit"] == "deny"
+        assert cfg["permission"]["bash"] == "deny"
+
+    def test_custom_permission_override(self, tmp_path):
+        cfg = OpenCodeAgent(SimpleNamespace(_host="http://h:1"), "m",
+                            workspace=str(tmp_path),
+                            permission={"bash": "deny"})._build_config()
+        assert cfg["permission"] == {"bash": "deny"}
+
+    def test_does_not_pollute_workspace(self, tmp_path):
+        # The config goes to a private OPENCODE_CONFIG file, never the workspace.
+        OpenCodeAgent(SimpleNamespace(_host="http://h:1"), "m",
+                      workspace=str(tmp_path))._build_config()
         assert not (tmp_path / "opencode.json").exists()
 
 

@@ -116,6 +116,7 @@ class OpenCodeAgent(BaseAgent):
         provider_base_url: str = "",
         model_id: str = "",
         api_key: str = "",
+        permission: Optional[Any] = None,
         hostname: str = "127.0.0.1",
         port: int = 0,
         server_password: str = "",
@@ -135,6 +136,7 @@ class OpenCodeAgent(BaseAgent):
         self._provider_base_url = provider_base_url or _derive_openai_base_url(engine)
         self._model_id = model_id or model
         self._api_key = api_key
+        self._permission = permission
         self._hostname = hostname
         self._port = port
         self._server_password = server_password or os.environ.get(
@@ -144,40 +146,45 @@ class OpenCodeAgent(BaseAgent):
         self._opencode_bin = opencode_bin or shutil.which("opencode") or "opencode"
         self._proc: Optional[subprocess.Popen] = None
         self._base: str = ""
+        self._config_dir: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Server lifecycle
     # ------------------------------------------------------------------
 
-    def _write_provider_config(self) -> None:
-        """Register OpenJarvis's engine as an OpenAI-compatible opencode provider.
+    def _default_permission(self) -> dict:
+        """Deterministic, hang-proof permission policy for headless use.
 
-        Written to ``<workspace>/opencode.json`` (opencode reads project config
-        from its working directory). Skipped when no base URL is available — in
-        that case ``model`` is assumed to name a provider opencode already
-        knows (e.g. ``ollama/llama3``).
+        opencode's interactive default *asks* before some actions (and ``plan``
+        asks before bash) — that would block forever with no TTY. We set
+        explicit ``allow``/``deny`` so the server never waits on a prompt:
+
+        - ``build``: allow edits + bash (a coding agent the user invoked).
+        - ``plan``: deny edits + bash (read-only), matching opencode's intent.
         """
-        if not self._provider_base_url:
-            return
-        cfg_path = Path(self._workspace) / "opencode.json"
-        existing: dict = {}
-        if cfg_path.exists():
-            try:
-                existing = json.loads(cfg_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                existing = {}
-        options: dict = {"baseURL": self._provider_base_url}
-        if self._api_key:
-            options["apiKey"] = self._api_key
-        providers = existing.setdefault("provider", {})
-        providers[self._provider_id] = {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "OpenJarvis Local",
-            "options": options,
-            "models": {self._model_id: {"name": self._model_id}},
+        if self._agent == "plan":
+            return {"edit": "deny", "bash": "deny", "webfetch": "allow"}
+        return {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+
+    def _build_config(self) -> dict:
+        """Build the opencode config (provider wiring + permission policy)."""
+        cfg: dict = {
+            "$schema": "https://opencode.ai/config.json",
+            "permission": self._permission or self._default_permission(),
         }
-        existing.setdefault("$schema", "https://opencode.ai/config.json")
-        cfg_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        if self._provider_base_url:
+            options: dict = {"baseURL": self._provider_base_url}
+            if self._api_key:
+                options["apiKey"] = self._api_key
+            cfg["provider"] = {
+                self._provider_id: {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "OpenJarvis Local",
+                    "options": options,
+                    "models": {self._model_id: {"name": self._model_id}},
+                }
+            }
+        return cfg
 
     def _ensure_server(self) -> str:
         """Spawn ``opencode serve`` (once) and return its base URL."""
@@ -189,8 +196,16 @@ class OpenCodeAgent(BaseAgent):
                 "`npm i -g opencode-ai` or `brew install anomalyco/tap/opencode` "
                 "(see https://opencode.ai)."
             )
-        self._write_provider_config()
+        # Write our config to a private file referenced via OPENCODE_CONFIG, so
+        # the engine provider + permission policy apply WITHOUT writing an
+        # opencode.json into the user's workspace.
+        import tempfile
+
+        self._config_dir = tempfile.mkdtemp(prefix="openjarvis-opencode-")
+        config_path = Path(self._config_dir) / "opencode.json"
+        config_path.write_text(json.dumps(self._build_config(), indent=2), "utf-8")
         env = dict(os.environ)
+        env["OPENCODE_CONFIG"] = str(config_path)
         if self._server_password:
             env["OPENCODE_SERVER_PASSWORD"] = self._server_password
         self._proc = subprocess.Popen(
@@ -257,6 +272,9 @@ class OpenCodeAgent(BaseAgent):
                 self._proc.kill()
         self._proc = None
         self._base = ""
+        if self._config_dir:
+            shutil.rmtree(self._config_dir, ignore_errors=True)
+            self._config_dir = None
 
     # ------------------------------------------------------------------
     # Run
