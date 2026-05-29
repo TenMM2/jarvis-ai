@@ -138,6 +138,22 @@ class _FakeResp:
         return self._d
 
 
+# Full-turn message list as returned by GET /session/{id}/message: the tool
+# executes in an intermediate assistant message, not the final one (this shape
+# was captured from a live opencode session).
+TURN_MESSAGES = [
+    {"info": {"role": "user"}, "parts": [{"type": "text", "text": "..."}]},
+    {"info": {"role": "assistant"}, "parts": [
+        {"type": "step-start"},
+        {"type": "tool", "tool": "write", "callID": "c1",
+         "state": {"status": "completed", "output": "Wrote file successfully.",
+                   "input": {"filePath": "greet.py", "content": "x"}}},
+        {"type": "step-finish", "reason": "tool"},
+    ]},
+    SPIKE_RESPONSE,  # final assistant message (text only)
+]
+
+
 class _FakeClient:
     def __enter__(self):
         return self
@@ -153,9 +169,12 @@ class _FakeClient:
             return _FakeResp(SPIKE_RESPONSE)
         return _FakeResp({})
 
+    def get(self, path, **kw):
+        return _FakeResp(TURN_MESSAGES)
+
 
 class TestRunParsing:
-    def test_run_parses_message(self, monkeypatch, tmp_path):
+    def test_run_parses_message_and_tools(self, monkeypatch, tmp_path):
         agent = OpenCodeAgent(SimpleNamespace(_host="http://h:1"), "local-model",
                               workspace=str(tmp_path), agent="build")
         monkeypatch.setattr(agent, "_ensure_server", lambda: "http://127.0.0.1:7654")
@@ -171,4 +190,8 @@ class TestRunParsing:
         assert _FakeClient.last_body["model"] == {
             "providerID": "openjarvis", "modelID": "local-model"
         }
-        assert _FakeClient.last_body["agent"] == "build"
+        # tool-results recovered from the intermediate message (not the final one)
+        assert len(res.tool_results) == 1
+        assert res.tool_results[0].tool_name == "write"
+        assert res.tool_results[0].success is True
+        assert "Wrote file" in res.tool_results[0].content

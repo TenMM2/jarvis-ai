@@ -76,12 +76,13 @@ def _extract_tool_results(parts: List[dict]) -> List[ToolResult]:
         status = state.get("status", "")
         output = state.get("output")
         if output is None:
-            output = state.get("title", "") or json.dumps(state) if state else ""
+            output = state.get("title", "") or (json.dumps(state) if state else "")
         results.append(
             ToolResult(
                 tool_name=p.get("tool", p.get("name", "unknown")),
                 content=str(output),
-                success=status not in ("error", "failed"),
+                # opencode tool state: completed | error | running | pending
+                success=status == "completed",
             )
         )
     return results
@@ -277,6 +278,8 @@ class OpenCodeAgent(BaseAgent):
                 content=str(exc), turns=1, metadata={"error": True}
             )
 
+        data: dict = {}
+        turn_parts: List[dict] = []
         try:
             with self._client() as c:
                 ses = c.post("/session", json={"title": input[:80]})
@@ -299,6 +302,23 @@ class OpenCodeAgent(BaseAgent):
                 resp = c.post(f"/session/{session_id}/message", json=body)
                 resp.raise_for_status()
                 data = resp.json()
+
+                # The prompt POST returns only the final assistant message;
+                # tool executions live in intermediate messages of the turn, so
+                # pull the whole session to recover them (verified against a
+                # live opencode session). Falls back to the final message.
+                turn_parts = list(data.get("parts", []))
+                try:
+                    msgs = c.get(f"/session/{session_id}/message").json()
+                    if isinstance(msgs, list):
+                        turn_parts = [
+                            part
+                            for mm in msgs
+                            if isinstance(mm, dict)
+                            for part in mm.get("parts", [])
+                        ]
+                except Exception as get_exc:
+                    logger.debug("opencode message fetch failed: %s", get_exc)
         except Exception as exc:
             logger.error("opencode run failed: %s", exc, exc_info=True)
             self._emit_turn_end(turns=1, error=True)
@@ -308,10 +328,9 @@ class OpenCodeAgent(BaseAgent):
                 metadata={"error": True},
             )
 
-        parts = data.get("parts", []) if isinstance(data, dict) else []
         info = data.get("info", {}) if isinstance(data, dict) else {}
-        content = _extract_text(parts)
-        tool_results = _extract_tool_results(parts)
+        content = _extract_text(data.get("parts", []))
+        tool_results = _extract_tool_results(turn_parts)
 
         self._emit_turn_end(turns=1)
         return AgentResult(
