@@ -76,29 +76,102 @@ fn total_ram_gb() -> f64 {
     8.0
 }
 
-/// Return the list of Qwen3.5 models that fit on this machine, smallest first.
-fn models_that_fit() -> Vec<&'static str> {
-    let ram = total_ram_gb();
+/// Return the Qwen3.5 models that fit in `ram_gb`, smallest first.
+fn models_that_fit_in(ram_gb: f64) -> Vec<&'static str> {
     QWEN35_MODELS
         .iter()
-        .filter(|(_, _, min_ram)| ram >= *min_ram)
+        .filter(|(_, _, min_ram)| ram_gb >= *min_ram)
         .map(|(tag, _, _)| *tag)
         .collect()
 }
 
-/// Pick the default model — prefers STARTUP_MODEL if it fits, otherwise
-/// falls back to the third-largest model that fits on this machine.
-fn preferred_model() -> &'static str {
-    let fitting = models_that_fit();
-    // Prefer STARTUP_MODEL when it fits (fast, good quality)
-    if fitting.contains(&STARTUP_MODEL) {
-        return STARTUP_MODEL;
-    }
+/// The default local model: the second-largest Qwen3.5 model that fits in
+/// `ram_gb`. Falls back to the only fitting model, or FALLBACK_MODEL if none
+/// fit. Deliberately NOT the largest — leaves RAM headroom for the OS/app.
+fn default_local_model(ram_gb: f64) -> &'static str {
+    let fitting = models_that_fit_in(ram_gb);
     match fitting.len() {
         0 => FALLBACK_MODEL,
         1 => fitting[0],
-        2 => fitting[0],
-        n => fitting[n - 3], // third-largest
+        n => fitting[n - 2],
+    }
+}
+
+/// A resolved boot plan derived purely from the inference config + RAM.
+/// Pure and side-effect-free so it can be unit-tested without spawning
+/// processes or touching the network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BootPlan {
+    /// Whether to start and wait for the bundled Ollama.
+    launch_ollama: bool,
+    /// The single Ollama model to pull (None for custom endpoints).
+    model_to_pull: Option<String>,
+    /// Optional `(engine_key, bare_host)` override for a custom endpoint,
+    /// e.g. `("lmstudio", "http://localhost:1234")`. Written into
+    /// ~/.openjarvis/config.toml so `jarvis serve` picks it up.
+    engine_host: Option<(String, String)>,
+    /// Args appended after `uv run jarvis serve --port <port>`.
+    serve_args: Vec<String>,
+}
+
+/// Default OpenAI-compatible engine key used when a custom endpoint config
+/// omits one (LM Studio is the canonical local server).
+const CUSTOM_FALLBACK_ENGINE: &str = "lmstudio";
+
+/// Decide what to launch/pull/serve from the inference config + system RAM.
+/// Pure: no I/O, no spawning.
+fn boot_plan(cfg: &InferenceConfig, ram_gb: f64) -> BootPlan {
+    match cfg.kind {
+        SourceKind::Ollama => {
+            let model = cfg
+                .model
+                .clone()
+                .unwrap_or_else(|| default_local_model(ram_gb).to_string());
+            BootPlan {
+                launch_ollama: true,
+                model_to_pull: Some(model.clone()),
+                engine_host: None,
+                serve_args: vec![
+                    "--engine".into(),
+                    "ollama".into(),
+                    "--model".into(),
+                    model,
+                    "--agent".into(),
+                    "simple".into(),
+                ],
+            }
+        }
+        SourceKind::Custom => {
+            let engine = cfg
+                .engine
+                .clone()
+                .unwrap_or_else(|| CUSTOM_FALLBACK_ENGINE.to_string());
+            // Record (engine_key, bare_host) only when a host is configured, so
+            // boot can write `[engine.<key>] host = ...` into config.toml. An
+            // empty host is dropped (no override).
+            let engine_host = cfg
+                .host
+                .clone()
+                .filter(|h| !h.is_empty())
+                .map(|h| (engine.clone(), h));
+            // `model` may be empty if the config is malformed; `jarvis serve`
+            // surfaces a clear error then (there is no universal default model
+            // for an arbitrary endpoint).
+            let model = cfg.model.clone().unwrap_or_default();
+            BootPlan {
+                launch_ollama: false,
+                model_to_pull: None,
+                engine_host,
+                serve_args: vec![
+                    "--engine".into(),
+                    engine,
+                    "--model".into(),
+                    model,
+                    "--agent".into(),
+                    "simple".into(),
+                ],
+            }
+        }
     }
 }
 
@@ -343,6 +416,8 @@ struct SetupStatus {
     server_ready: bool,
     model_ready: bool,
     error: Option<String>,
+    /// "ollama" | "custom" — lets the setup UI relabel the progress steps.
+    source: String,
 }
 
 impl Default for SetupStatus {
@@ -354,6 +429,7 @@ impl Default for SetupStatus {
             server_ready: false,
             model_ready: false,
             error: None,
+            source: "ollama".into(),
         }
     }
 }
@@ -375,6 +451,28 @@ async fn wait_for_url(url: &str, timeout: Duration) -> bool {
             if resp.status().is_success() {
                 return true;
             }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// True if a custom OpenAI-compatible endpoint answers at all (any HTTP
+/// status counts — even a 404 proves the server is up). `host` is the bare
+/// base URL; we probe `<host>/v1/models`.
+async fn endpoint_reachable(host: &str, timeout: Duration) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let url = format!("{}/v1/models", host.trim_end_matches('/'));
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        if client.get(&url).send().await.is_ok() {
+            return true;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -608,80 +706,153 @@ fn format_uv_sync_spawn_error(root: &std::path::Path, uv_bin: &str, err: &str) -
 // ---------------------------------------------------------------------------
 
 async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
-    // Phase 1: Start Ollama
+    // Decide the inference source (default Ollama) before launching anything.
+    let cfg = read_inference_config();
+    let plan = boot_plan(&cfg, total_ram_gb());
     {
         let mut s = status.lock().await;
-        s.phase = "ollama".into();
-        s.detail = "Starting inference engine...".into();
-    }
-
-    // Try the bundled sidecar first, fall back to system ollama
-    let ollama_child = {
-        let ollama_bin = resolve_bin("ollama");
-        let sidecar = tokio::process::Command::new(&ollama_bin)
-            .arg("serve")
-            .env("OLLAMA_HOST", format!("127.0.0.1:{}", OLLAMA_PORT))
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        match sidecar {
-            Ok(child) => Some(child),
-            Err(_) => None,
+        s.source = match cfg.kind {
+            SourceKind::Ollama => "ollama",
+            SourceKind::Custom => "custom",
         }
-    };
-
-    if let Some(child) = ollama_child {
-        backend.lock().await.ollama = Some(ChildHandle { child });
+        .into();
     }
 
-    let ollama_url = format!("http://127.0.0.1:{}/api/tags", OLLAMA_PORT);
-    let ollama_ok = wait_for_url(&ollama_url, Duration::from_secs(30)).await;
+    // For the Ollama path, the model pull may fall back to FALLBACK_MODEL; we
+    // record what is actually available here so the serve command below uses
+    // it instead of the originally-planned tag. None on the custom path.
+    let mut serve_model_override: Option<String> = None;
 
-    if !ollama_ok {
-        let mut s = status.lock().await;
-        s.error = Some("Could not start Ollama. Install it from https://ollama.com".into());
-        return;
-    }
-
-    {
-        let mut s = status.lock().await;
-        s.ollama_ready = true;
-        s.detail = "Inference engine ready.".into();
-    }
-
-    // Phase 2: Pull one small model (qwen3.5:2b) so the app can open fast.
-    // Remaining models are pulled in the background after the server starts.
-    {
-        let mut s = status.lock().await;
-        s.phase = "model".into();
-        s.detail = format!("Checking for {}...", STARTUP_MODEL);
-    }
-
-    if !ollama_has_model(STARTUP_MODEL).await {
+    if plan.launch_ollama {
+        // Phase 1: Start Ollama
         {
             let mut s = status.lock().await;
-            s.detail = format!("Downloading {}... (this may take a minute)", STARTUP_MODEL);
+            s.phase = "ollama".into();
+            s.detail = "Starting inference engine...".into();
         }
-        if let Err(e) = pull_model(STARTUP_MODEL).await {
-            // If the startup model fails, try the tiny fallback
-            eprintln!("Warning: failed to pull {}: {}", STARTUP_MODEL, e);
-            if !ollama_has_model(FALLBACK_MODEL).await {
+
+        // Try the bundled sidecar first, fall back to system ollama
+        let ollama_child = {
+            let ollama_bin = resolve_bin("ollama");
+            let sidecar = tokio::process::Command::new(&ollama_bin)
+                .arg("serve")
+                .env("OLLAMA_HOST", format!("127.0.0.1:{}", OLLAMA_PORT))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            match sidecar {
+                Ok(child) => Some(child),
+                Err(_) => None,
+            }
+        };
+
+        if let Some(child) = ollama_child {
+            backend.lock().await.ollama = Some(ChildHandle { child });
+        }
+
+        let ollama_url = format!("http://127.0.0.1:{}/api/tags", OLLAMA_PORT);
+        if !wait_for_url(&ollama_url, Duration::from_secs(30)).await {
+            let mut s = status.lock().await;
+            s.error = Some("Could not start Ollama. Install it from https://ollama.com".into());
+            return;
+        }
+
+        {
+            let mut s = status.lock().await;
+            s.ollama_ready = true;
+            s.detail = "Inference engine ready.".into();
+        }
+
+        // Phase 2: Pull the single default model (see default_local_model /
+        // boot_plan). We deliberately do NOT pull any others.
+        let model = plan
+            .model_to_pull
+            .clone()
+            .unwrap_or_else(|| STARTUP_MODEL.to_string());
+        {
+            let mut s = status.lock().await;
+            s.phase = "model".into();
+            s.detail = format!("Checking for {}...", model);
+        }
+
+        if !ollama_has_model(&model).await {
+            {
                 let mut s = status.lock().await;
-                s.detail = format!("Downloading {}...", FALLBACK_MODEL);
-                drop(s);
-                if let Err(e2) = pull_model(FALLBACK_MODEL).await {
-                    let mut s = status.lock().await;
-                    s.error = Some(format!("Failed to download model: {}", e2));
-                    return;
+                s.detail = format!("Downloading {}... (this may take a minute)", model);
+            }
+            if let Err(e) = pull_model(&model).await {
+                // If the chosen model fails, try the tiny fallback
+                eprintln!("Warning: failed to pull {}: {}", model, e);
+                if !ollama_has_model(FALLBACK_MODEL).await {
+                    {
+                        let mut s = status.lock().await;
+                        s.detail = format!("Downloading {}...", FALLBACK_MODEL);
+                    }
+                    if let Err(e2) = pull_model(FALLBACK_MODEL).await {
+                        let mut s = status.lock().await;
+                        s.error = Some(format!("Failed to download model: {}", e2));
+                        return;
+                    }
                 }
             }
         }
-    }
 
-    {
-        let mut s = status.lock().await;
-        s.model_ready = true;
-        s.detail = "Model ready.".into();
+        // The pull may have fallen back to FALLBACK_MODEL; serve and persist
+        // whatever is actually available now, not the originally-planned tag.
+        let resolved_model = if ollama_has_model(&model).await {
+            model
+        } else {
+            FALLBACK_MODEL.to_string()
+        };
+        serve_model_override = Some(resolved_model.clone());
+
+        // Persist the resolved model so Settings shows it and future boots reuse it.
+        let mut persisted = cfg.clone();
+        persisted.model = Some(resolved_model);
+        let _ = write_inference_config(&persisted);
+
+        {
+            let mut s = status.lock().await;
+            s.model_ready = true;
+            s.detail = "Model ready.".into();
+        }
+    } else {
+        // Custom OpenAI-compatible endpoint: never start Ollama, never download.
+        let host = plan
+            .engine_host
+            .as_ref()
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        {
+            let mut s = status.lock().await;
+            s.phase = "model".into();
+            s.detail = format!("Connecting to {}...", host);
+        }
+        if host.is_empty() || !endpoint_reachable(&host, Duration::from_secs(15)).await {
+            let mut s = status.lock().await;
+            s.error = Some(format!(
+                "Could not reach your custom inference server at {}. \
+                 Start the server (e.g. LM Studio) and check the URL in Settings, then relaunch.",
+                if host.is_empty() { "(no URL set)" } else { host.as_str() }
+            ));
+            return;
+        }
+        // Point `jarvis serve` at the user's endpoint by writing the engine
+        // host into ~/.openjarvis/config.toml (the env var alone is shadowed by
+        // the engine's non-empty default host in the Python layer).
+        if let Some((engine, host)) = &plan.engine_host {
+            if let Err(e) = set_engine_host_in_config(engine, host) {
+                let mut s = status.lock().await;
+                s.error = Some(format!("Could not write engine config: {}", e));
+                return;
+            }
+        }
+        {
+            let mut s = status.lock().await;
+            s.ollama_ready = true;
+            s.model_ready = true;
+            s.detail = "Connected to custom endpoint.".into();
+        }
     }
 
     // Phase 3: Start jarvis serve
@@ -848,16 +1019,6 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
         }
     }
 
-    // Start with STARTUP_MODEL (just pulled) or preferred if already available.
-    let pref = preferred_model();
-    let startup_model = if ollama_has_model(pref).await {
-        pref
-    } else if ollama_has_model(STARTUP_MODEL).await {
-        STARTUP_MODEL
-    } else {
-        FALLBACK_MODEL
-    };
-
     let root = project_root.as_ref().unwrap();
 
     // Install dependencies automatically (handles fresh clones).
@@ -907,28 +1068,35 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
 
     {
         let mut s = status.lock().await;
-        s.detail = format!(
-            "Starting server with {} from {}...",
-            startup_model,
-            root.display(),
-        );
+        s.detail = format!("Starting API server from {}...", root.display());
     }
 
     let mut cmd = tokio::process::Command::new(&uv_bin);
-    cmd.args([
-        "run",
-        "jarvis",
-        "serve",
-        "--port",
-        &JARVIS_PORT.to_string(),
-        "--model",
-        startup_model,
-        "--agent",
-        "simple",
-    ])
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::piped())
-    .current_dir(root);
+    let mut serve_argv: Vec<String> = vec![
+        "run".into(),
+        "jarvis".into(),
+        "serve".into(),
+        "--port".into(),
+        JARVIS_PORT.to_string(),
+    ];
+    serve_argv.extend(plan.serve_args.iter().cloned());
+    // If the Ollama pull fell back to a different tag than planned, serve the
+    // tag that is actually present. boot_plan always emits `--model` followed
+    // immediately by its value, so `i + 1` is in bounds.
+    if let Some(m) = &serve_model_override {
+        match serve_argv.iter().position(|a| a == "--model") {
+            Some(i) if i + 1 < serve_argv.len() => serve_argv[i + 1] = m.clone(),
+            _ => eprintln!(
+                "Warning: resolved model {:?} could not be applied; \
+                 '--model <value>' not found in serve args {:?}",
+                m, serve_argv
+            ),
+        }
+    }
+    cmd.args(&serve_argv)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .current_dir(root);
 
     // Inject cloud API keys from ~/.openjarvis/cloud-keys.env
     for (key, value) in read_cloud_keys() {
@@ -971,11 +1139,16 @@ async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
             s.error = Some(format!(
                 "Jarvis server is running but the inference engine is not available \
                  (HTTP 503). This usually means the configured model couldn't be loaded.\n\n\
-                 Check the server logs, or run 'uv run jarvis serve --port {} --model {}' \
+                 Check the server logs, or run 'uv run jarvis serve --port {}{}' \
                  from {} to see the engine error.\n\n\
                  Server response:\n{}",
                 JARVIS_PORT,
-                startup_model,
+                // Show the args actually passed (after `serve --port <port>`),
+                // including any post-fallback `--model` override.
+                match serve_argv.get(5..) {
+                    Some(rest) if !rest.is_empty() => format!(" {}", rest.join(" ")),
+                    _ => String::new(),
+                },
                 root.display(),
                 body.trim(),
             ));
@@ -1435,6 +1608,58 @@ async fn get_cloud_key_status() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!(status))
 }
 
+/// Return the current inference-source config for the Settings UI.
+#[tauri::command]
+async fn get_inference_source() -> Result<InferenceConfig, String> {
+    Ok(read_inference_config())
+}
+
+/// Persist the chosen inference source. `host` is normalized to a bare base
+/// URL. For custom endpoints, an optional API key is stored in cloud-keys.env
+/// under `<ENGINE>_API_KEY`. Applies on next app launch.
+#[tauri::command]
+async fn set_inference_source(
+    kind: String,
+    model: Option<String>,
+    host: Option<String>,
+    engine: Option<String>,
+    api_key: Option<String>,
+) -> Result<(), String> {
+    let kind = match kind.as_str() {
+        "ollama" => SourceKind::Ollama,
+        "custom" => SourceKind::Custom,
+        other => return Err(format!("Unknown inference source kind: {:?}", other)),
+    };
+    let cfg = InferenceConfig {
+        kind,
+        model: model.filter(|m| !m.is_empty()),
+        host: host.map(|h| normalize_host(&h)).filter(|h| !h.is_empty()),
+        engine: engine.filter(|e| !e.is_empty()),
+    };
+    if let SourceKind::Custom = cfg.kind {
+        if cfg.host.is_none() {
+            return Err("A server URL is required for a custom endpoint.".into());
+        }
+        if cfg.model.as_deref().unwrap_or("").is_empty() {
+            return Err("A model name is required for a custom endpoint.".into());
+        }
+        if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+            let engine = cfg
+                .engine
+                .clone()
+                .unwrap_or_else(|| CUSTOM_FALLBACK_ENGINE.to_string());
+            let key_name = format!("{}_API_KEY", engine.to_ascii_uppercase());
+            // Save the key before persisting the config: if the key can't be
+            // written, surface it and DON'T record a custom source whose
+            // credential is missing (which would fail confusingly at runtime).
+            save_cloud_key(key_name, key)
+                .await
+                .map_err(|e| format!("Could not store the API key: {}", e))?;
+        }
+    }
+    write_inference_config(&cfg)
+}
+
 /// Pull a model via Ollama (called from frontend download button).
 #[tauri::command]
 async fn pull_ollama_model(model_name: String) -> Result<serde_json::Value, String> {
@@ -1462,6 +1687,103 @@ async fn delete_ollama_model(model_name: String) -> Result<serde_json::Value, St
         return Err(format!("Delete returned status {}", resp.status()));
     }
     Ok(serde_json::json!({"status": "deleted", "model": model_name}))
+}
+
+// ---------------------------------------------------------------------------
+// Inference-source selection (~/.openjarvis/inference.json)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum SourceKind {
+    Ollama,
+    Custom,
+}
+
+impl Default for SourceKind {
+    fn default() -> Self {
+        SourceKind::Ollama
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
+struct InferenceConfig {
+    #[serde(default)]
+    kind: SourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    /// Bare base URL (no trailing `/v1`), custom only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+    /// OpenAI-compatible engine key (e.g. "lmstudio"), custom only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine: Option<String>,
+}
+
+/// Path to the inference-source config (~/.openjarvis/inference.json).
+fn inference_config_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(home_dir())
+        .join(".openjarvis")
+        .join("inference.json")
+}
+
+/// Parse config text. Any error (missing/garbage) yields the Ollama default —
+/// a broken file must never strand the user with no working inference source.
+fn parse_inference_config(text: &str) -> InferenceConfig {
+    serde_json::from_str::<InferenceConfig>(text).unwrap_or_default()
+}
+
+/// Read the on-disk inference config, or the Ollama default if absent.
+fn read_inference_config() -> InferenceConfig {
+    match std::fs::read_to_string(inference_config_path()) {
+        Ok(text) => parse_inference_config(&text),
+        Err(_) => InferenceConfig::default(),
+    }
+}
+
+/// Write the inference config to disk (pretty JSON).
+fn write_inference_config(cfg: &InferenceConfig) -> Result<(), String> {
+    let path = inference_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json + "\n").map_err(|e| format!("Failed to save inference config: {}", e))
+}
+
+/// Upsert `[engine.<engine>] host = "<host>"` into an existing config.toml
+/// string, preserving all other content/formatting. Pure: string in, string out.
+fn upsert_engine_host(existing: &str, engine: &str, host: &str) -> Result<String, String> {
+    let mut doc = existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("Invalid config.toml: {}", e))?;
+    doc["engine"][engine]["host"] = toml_edit::value(host);
+    Ok(doc.to_string())
+}
+
+/// Write the custom-endpoint host into ~/.openjarvis/config.toml so
+/// `jarvis serve` (which reads that file via load_config) points at it.
+/// The `<ENGINE>_HOST` env var is unreliable — it is shadowed by the engine's
+/// non-empty default host in the Python layer — so config.toml is the override.
+fn set_engine_host_in_config(engine: &str, host: &str) -> Result<(), String> {
+    let path = std::path::PathBuf::from(home_dir())
+        .join(".openjarvis")
+        .join("config.toml");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let updated = upsert_engine_host(&existing, engine, host)?;
+    std::fs::write(&path, updated).map_err(|e| format!("Failed to write config.toml: {}", e))
+}
+
+/// Normalize a user-entered server URL to a bare base host: trim whitespace,
+/// drop a trailing `/v1` segment (the engine re-appends its own api prefix),
+/// then drop any trailing slash.
+fn normalize_host(raw: &str) -> String {
+    let s = raw.trim().trim_end_matches('/');
+    let s = s.strip_suffix("/v1").unwrap_or(s);
+    s.trim_end_matches('/').to_string()
 }
 
 /// Check speech backend health.
@@ -1987,6 +2309,8 @@ pub fn run() {
             delete_ollama_model,
             save_cloud_key,
             get_cloud_key_status,
+            get_inference_source,
+            set_inference_source,
             toggle_overlay,
             hide_overlay,
             get_overlay_conversation,
@@ -2009,7 +2333,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_uv_sync_failure, format_uv_sync_spawn_error, uv_sync_stderr_tail};
+    use super::{
+        boot_plan, default_local_model, format_uv_sync_failure, format_uv_sync_spawn_error,
+        normalize_host, parse_inference_config, upsert_engine_host, uv_sync_stderr_tail,
+        InferenceConfig, SourceKind,
+    };
     use std::path::Path;
 
     #[test]
@@ -2073,5 +2401,147 @@ mod tests {
         assert!(msg.contains("C:\\Users\\me\\.local\\bin\\uv.exe"));
         assert!(msg.contains("/repo"));
         assert!(msg.contains("No such file or directory"));
+    }
+
+    #[test]
+    fn default_local_model_picks_second_largest_that_fits() {
+        // QWEN35_MODELS min_ram ladder: 4,6,8,12,24,32,96 GB
+        assert_eq!(default_local_model(4.0), "qwen3.5:0.8b");  // only one fits
+        assert_eq!(default_local_model(8.0), "qwen3.5:2b");    // fits 0.8/2/4 → 2nd-largest
+        assert_eq!(default_local_model(16.0), "qwen3.5:4b");   // fits ..9b → 2nd-largest
+        assert_eq!(default_local_model(32.0), "qwen3.5:27b");  // fits 0.8/2/4/9/27/35b → 2nd-largest is 27b
+        assert_eq!(default_local_model(128.0), "qwen3.5:35b"); // fits all → 2nd-largest
+    }
+
+    #[test]
+    fn default_local_model_falls_back_when_nothing_fits() {
+        assert_eq!(default_local_model(1.0), super::FALLBACK_MODEL);
+    }
+
+    #[test]
+    fn parse_defaults_to_ollama_when_file_missing_or_garbage() {
+        assert!(matches!(parse_inference_config("").kind, SourceKind::Ollama));
+        assert!(matches!(parse_inference_config("not json").kind, SourceKind::Ollama));
+    }
+
+    #[test]
+    fn parse_reads_custom_endpoint() {
+        let cfg = parse_inference_config(
+            r#"{"kind":"custom","model":"qwen2.5-7b","host":"http://localhost:1234","engine":"lmstudio"}"#,
+        );
+        assert!(matches!(cfg.kind, SourceKind::Custom));
+        assert_eq!(cfg.model.as_deref(), Some("qwen2.5-7b"));
+        assert_eq!(cfg.host.as_deref(), Some("http://localhost:1234"));
+        assert_eq!(cfg.engine.as_deref(), Some("lmstudio"));
+    }
+
+    #[test]
+    fn normalize_host_strips_trailing_slash_and_v1() {
+        assert_eq!(normalize_host("http://localhost:1234/v1"), "http://localhost:1234");
+        assert_eq!(normalize_host("http://localhost:1234/v1/"), "http://localhost:1234");
+        assert_eq!(normalize_host("http://localhost:1234/"), "http://localhost:1234");
+        assert_eq!(normalize_host("http://host:8000"), "http://host:8000");
+    }
+
+    #[test]
+    fn boot_plan_ollama_launches_and_pulls_one_model() {
+        let cfg = InferenceConfig { kind: SourceKind::Ollama, ..Default::default() };
+        let plan = boot_plan(&cfg, 16.0);
+        assert!(plan.launch_ollama);
+        assert_eq!(plan.model_to_pull.as_deref(), Some("qwen3.5:4b"));
+        assert!(plan.engine_host.is_none());
+        assert!(plan.serve_args.windows(2).any(|w| w == ["--engine", "ollama"]));
+        assert!(plan.serve_args.windows(2).any(|w| w == ["--model", "qwen3.5:4b"]));
+    }
+
+    #[test]
+    fn boot_plan_ollama_respects_pinned_model() {
+        let cfg = InferenceConfig {
+            kind: SourceKind::Ollama,
+            model: Some("qwen3.5:9b".into()),
+            ..Default::default()
+        };
+        let plan = boot_plan(&cfg, 16.0);
+        assert_eq!(plan.model_to_pull.as_deref(), Some("qwen3.5:9b"));
+    }
+
+    #[test]
+    fn boot_plan_custom_skips_ollama_and_sets_engine_host() {
+        let cfg = InferenceConfig {
+            kind: SourceKind::Custom,
+            model: Some("qwen2.5-7b".into()),
+            host: Some("http://localhost:1234".into()),
+            engine: Some("lmstudio".into()),
+        };
+        let plan = boot_plan(&cfg, 16.0);
+        assert!(!plan.launch_ollama);
+        assert!(plan.model_to_pull.is_none());
+        assert_eq!(
+            plan.engine_host,
+            Some(("lmstudio".to_string(), "http://localhost:1234".to_string()))
+        );
+        assert!(plan.serve_args.windows(2).any(|w| w == ["--engine", "lmstudio"]));
+        assert!(plan.serve_args.windows(2).any(|w| w == ["--model", "qwen2.5-7b"]));
+    }
+
+    #[test]
+    fn boot_plan_custom_defaults_engine_to_lmstudio() {
+        let cfg = InferenceConfig {
+            kind: SourceKind::Custom,
+            model: Some("m".into()),
+            host: Some("http://h:1".into()),
+            engine: None,
+        };
+        let plan = boot_plan(&cfg, 16.0);
+        assert_eq!(plan.engine_host.as_ref().unwrap().0, "lmstudio");
+        assert!(plan.serve_args.windows(2).any(|w| w == ["--engine", "lmstudio"]));
+    }
+
+    #[test]
+    fn boot_plan_custom_omits_engine_host_when_no_host() {
+        // No configured host → don't set engine_host (no override to write).
+        let cfg = InferenceConfig {
+            kind: SourceKind::Custom,
+            model: Some("m".into()),
+            host: None,
+            engine: Some("lmstudio".into()),
+        };
+        let plan = boot_plan(&cfg, 16.0);
+        assert!(plan.engine_host.is_none());
+    }
+
+    #[test]
+    fn boot_plan_ollama_uses_fallback_model_on_low_ram() {
+        // Below the smallest model's min_ram → default_local_model → FALLBACK_MODEL.
+        let cfg = InferenceConfig { kind: SourceKind::Ollama, ..Default::default() };
+        let plan = boot_plan(&cfg, 1.0);
+        assert_eq!(plan.model_to_pull.as_deref(), Some(super::FALLBACK_MODEL));
+    }
+
+    #[test]
+    fn upsert_engine_host_writes_into_empty_config() {
+        let out = upsert_engine_host("", "lmstudio", "http://localhost:1234").unwrap();
+        let doc: toml_edit::DocumentMut = out.parse().unwrap();
+        assert_eq!(
+            doc["engine"]["lmstudio"]["host"].as_str(),
+            Some("http://localhost:1234")
+        );
+    }
+
+    #[test]
+    fn upsert_engine_host_preserves_existing_content() {
+        let existing = "[intelligence]\ndefault_model = \"keep-me\"\n";
+        let out = upsert_engine_host(existing, "vllm", "http://host:8000").unwrap();
+        let doc: toml_edit::DocumentMut = out.parse().unwrap();
+        assert_eq!(doc["intelligence"]["default_model"].as_str(), Some("keep-me"));
+        assert_eq!(doc["engine"]["vllm"]["host"].as_str(), Some("http://host:8000"));
+    }
+
+    #[test]
+    fn upsert_engine_host_updates_existing_host() {
+        let existing = "[engine.lmstudio]\nhost = \"http://old:1\"\n";
+        let out = upsert_engine_host(existing, "lmstudio", "http://new:2").unwrap();
+        let doc: toml_edit::DocumentMut = out.parse().unwrap();
+        assert_eq!(doc["engine"]["lmstudio"]["host"].as_str(), Some("http://new:2"));
     }
 }
