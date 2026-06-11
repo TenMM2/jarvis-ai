@@ -146,7 +146,13 @@ def serve(
         except Exception as exc:
             logger.debug("Telemetry store init failed: %s", exc)
 
-    resolved = get_engine(config, engine_key)
+    # Select with the model we'll actually serve so an engine that can't
+    # serve it (e.g. the cloud fallback without the matching provider key) is
+    # skipped rather than chosen and failing per-request later (see #532).
+    selection_model = (
+        model_name or config.server.model or config.intelligence.default_model or None
+    )
+    resolved = get_engine(config, engine_key, model=selection_model)
     if resolved is None:
         console.print(
             "[red bold]No inference engine available.[/red bold]\n\n"

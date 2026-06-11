@@ -1477,6 +1477,34 @@ class CloudEngine(InferenceEngine):
             models.extend(_CODEX_MODELS)
         return models
 
+    def _client_for_model(self, model: str) -> Any:
+        """Return the provider client ``generate``/``stream`` will dispatch to
+        for *model* (mirrors the routing in those methods)."""
+        if _is_codex_model(model):
+            return self._codex_client
+        if _is_openrouter_model(model):
+            return self._openrouter_client
+        if _is_minimax_model(model):
+            return self._minimax_client
+        if _is_anthropic_model(model):
+            return self._anthropic_client
+        if _is_google_model(model):
+            return self._google_client
+        return self._openai_client
+
+    def can_serve(self, model: str) -> bool:
+        """Return ``True`` only if the provider client for *model* exists.
+
+        ``health()`` is ``True`` whenever *any* provider client is configured,
+        but a request for, say, a ``gpt-*`` model still needs the OpenAI
+        client specifically. Without this check the cloud engine gets picked
+        as a fallback (when the local engine is down) for a model it can't
+        serve, then dies at call time with "<provider> client not available"
+        instead of the user getting a helpful "start your local engine"
+        message (see #532).
+        """
+        return self._client_for_model(model) is not None
+
     def health(self) -> bool:
         return (
             self._openai_client is not None
