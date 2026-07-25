@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from openjarvis.agents.orchestrator import OrchestratorAgent
 from openjarvis.core.types import ToolResult
 from openjarvis.engine._stubs import InferenceEngine
@@ -58,6 +60,58 @@ class _MockTool(BaseTool):
         return ToolResult(tool_name="calculator", content=str(expr), success=True)
 
 
+class _FileReadLikeTool(BaseTool):
+    """Small test double with one required and one optional parameter."""
+
+    tool_id = "file_read"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="file_read",
+            description="Read a file",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "max_lines": {"type": "integer"},
+                },
+                "required": ["path"],
+            },
+        )
+
+    def execute(self, **params) -> ToolResult:
+        return ToolResult(
+            tool_name="file_read",
+            content=params.get("path", ""),
+            success=True,
+        )
+
+
+class _AmbiguousTool(BaseTool):
+    """Test double whose bare input cannot map to one parameter safely."""
+
+    tool_id = "copy"
+
+    @property
+    def spec(self) -> ToolSpec:
+        return ToolSpec(
+            name="copy",
+            description="Copy a value",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "destination": {"type": "string"},
+                },
+                "required": ["source", "destination"],
+            },
+        )
+
+    def execute(self, **params) -> ToolResult:
+        return ToolResult(tool_name="copy", content="copied", success=True)
+
+
 # -- Tests -------------------------------------------------------------------
 
 
@@ -80,6 +134,56 @@ class TestStructuredMode:
         assert result.content == "4"
         assert result.turns == 2
         assert len(result.tool_results) == 1
+        assert result.tool_results[0].success is True
+        assert result.tool_results[0].content == "2+2"
+
+    @pytest.mark.parametrize(
+        "raw_input",
+        [
+            "notes/today.md",
+            '"notes/today.md"',
+            '{"path": "notes/today.md"}',
+        ],
+    )
+    def test_single_required_parameter_accepts_string_input(self, raw_input):
+        """Structured input maps unambiguous strings to the required field."""
+        engine = _MockEngine(
+            [
+                f"TOOL: file_read\nINPUT: {raw_input}",
+                "FINAL_ANSWER: done",
+            ]
+        )
+        agent = OrchestratorAgent(
+            engine=engine,
+            model="test",
+            tools=[_FileReadLikeTool()],
+            mode="structured",
+        )
+
+        result = agent.run("Read my notes")
+
+        assert result.tool_results[0].success is True
+        assert result.tool_results[0].content == "notes/today.md"
+
+    def test_multiple_required_parameters_do_not_guess_string_mapping(self):
+        """Ambiguous bare input remains invalid instead of choosing a field."""
+        engine = _MockEngine(
+            [
+                "TOOL: copy\nINPUT: notes/today.md",
+                "FINAL_ANSWER: done",
+            ]
+        )
+        agent = OrchestratorAgent(
+            engine=engine,
+            model="test",
+            tools=[_AmbiguousTool()],
+            mode="structured",
+        )
+
+        result = agent.run("Copy my notes")
+
+        assert result.tool_results[0].success is False
+        assert "Invalid arguments JSON" in result.tool_results[0].content
 
     def test_direct_final_answer(self):
         """Test that FINAL_ANSWER on first turn works."""

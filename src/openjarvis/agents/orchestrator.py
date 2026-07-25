@@ -13,6 +13,7 @@ Supports two modes:
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import re
 from typing import Any, List, Optional
 
@@ -142,7 +143,10 @@ class OrchestratorAgent(ToolUsingAgent):
                 tool_call = ToolCall(
                     id=f"orch_{turns}",
                     name=parsed["tool"],
-                    arguments=parsed["input"] or "{}",
+                    arguments=self._normalize_structured_tool_input(
+                        parsed["tool"],
+                        parsed["input"],
+                    ),
                 )
                 tool_result = self._executor.execute(tool_call)
                 all_tool_results.append(tool_result)
@@ -161,6 +165,58 @@ class OrchestratorAgent(ToolUsingAgent):
 
         # Max turns exceeded
         return self._max_turns_result(all_tool_results, turns)
+
+    def _normalize_structured_tool_input(
+        self,
+        tool_name: str,
+        raw_input: str,
+    ) -> str:
+        """Map an unambiguous string input to the tool's JSON parameter."""
+        if not raw_input:
+            return "{}"
+
+        try:
+            parsed_input = json.loads(raw_input)
+        except json.JSONDecodeError:
+            parsed_input = raw_input
+
+        if isinstance(parsed_input, dict):
+            return raw_input
+        if not isinstance(parsed_input, str):
+            return raw_input
+
+        tool = next(
+            (
+                candidate
+                for candidate in self._tools
+                if candidate.spec.name == tool_name
+            ),
+            None,
+        )
+        if tool is None:
+            return raw_input
+
+        parameters = tool.spec.parameters
+        properties = parameters.get("properties", {})
+        required = parameters.get("required", [])
+        if not isinstance(properties, dict) or not isinstance(required, list):
+            return raw_input
+
+        if len(required) == 1 and required[0] in properties:
+            parameter_name = required[0]
+        elif not required and len(properties) == 1:
+            parameter_name = next(iter(properties))
+        else:
+            return raw_input
+
+        parameter_schema = properties[parameter_name]
+        if isinstance(parameter_schema, dict) and parameter_schema.get("type") not in (
+            None,
+            "string",
+        ):
+            return raw_input
+
+        return json.dumps({parameter_name: parsed_input})
 
     @staticmethod
     def _parse_structured_response(text: str) -> dict:
