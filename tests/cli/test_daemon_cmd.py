@@ -117,13 +117,35 @@ class TestDaemonDetachment:
             return spawns[-1].kwargs
 
     def test_windows_spawn_is_detached_from_the_console(self) -> None:
-        kwargs = self._spawn_kwargs("win32")
+        # These constants are only exported by ``subprocess`` on Windows.
+        # Supply their documented values so the simulated Windows branch is
+        # still exercised by the POSIX test job.
+        detached_process = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        create_new_process_group = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+        )
+        with (
+            patch.object(
+                subprocess,
+                "DETACHED_PROCESS",
+                detached_process,
+                create=True,
+            ),
+            patch.object(
+                subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                create_new_process_group,
+                create=True,
+            ),
+        ):
+            kwargs = self._spawn_kwargs("win32")
+
         flags = kwargs.get("creationflags", 0)
-        assert flags & subprocess.DETACHED_PROCESS, (
+        assert flags & detached_process, (
             "server must be spawned with DETACHED_PROCESS on Windows, otherwise "
             "closing the launching console kills it"
         )
-        assert flags & subprocess.CREATE_NEW_PROCESS_GROUP, (
+        assert flags & create_new_process_group, (
             "server must be in its own process group so Ctrl-C in the parent "
             "console does not propagate to it"
         )
