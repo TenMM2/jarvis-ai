@@ -15,6 +15,7 @@ import type {
   TokenUsage,
 } from '../types';
 import type { ManagedAgent } from './api';
+import { isEmbedOnlyModel } from './model-capabilities';
 
 export interface CachedConnector {
   connector_id: string;
@@ -444,11 +445,36 @@ export const useAppStore = create<AppState>((set, get) => {
     // ── Models & server ────────────────────────────────────────────
 
     setModels: (models: ModelInfo[]) =>
-      set((state) =>
-        !state.selectedModel && models.length > 0
-          ? { models, selectedModel: models[0].id }
-          : { models },
-      ),
+      set((state) => {
+        // Ollama returns embed-only models (e.g. nomic-embed-text) in the
+        // same list as chat models. Auto-picking models[0] selected the
+        // embedder and every chat failed with HTTP 400 "does not support
+        // chat". Prefer a real chat model for selection / fallback.
+        const chatModels = models.filter((m) => !isEmbedOnlyModel(m.id));
+        const preferred =
+          (state.settings.defaultModel &&
+            chatModels.some((m) => m.id === state.settings.defaultModel) &&
+            state.settings.defaultModel) ||
+          chatModels[0]?.id ||
+          models.find((m) => !isEmbedOnlyModel(m.id))?.id ||
+          '';
+
+        const currentIsBad =
+          !!state.selectedModel && isEmbedOnlyModel(state.selectedModel);
+        const currentMissing =
+          !!state.selectedModel &&
+          !models.some((m) => m.id === state.selectedModel);
+
+        if (!state.selectedModel || currentIsBad || currentMissing) {
+          // Prefer a real chat model. If none exist, clear a bad/missing
+          // selection rather than keeping an embed-only id that 400s on chat.
+          return {
+            models,
+            selectedModel: preferred,
+          };
+        }
+        return { models };
+      }),
     setModelsLoading: (loading: boolean) => set({ modelsLoading: loading }),
     setSelectedModel: (model: string) => set({ selectedModel: model }),
     setServerInfo: (info: ServerInfo | null) => set({ serverInfo: info }),
