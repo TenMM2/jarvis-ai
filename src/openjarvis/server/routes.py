@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from openjarvis.core.paths import get_config_dir
-from openjarvis.core.types import Message, Role
+from openjarvis.core.types import Message, Role, ToolCall
 from openjarvis.server.model_capabilities import is_embed_only_model
 from openjarvis.server.models import (
     ChatCompletionChunk,
@@ -40,6 +40,15 @@ def _to_messages(chat_messages) -> list[Message]:
                 role=role,
                 content=m.content or "",
                 name=m.name,
+                tool_calls=[
+                    ToolCall(
+                        id=tool_call.get("id", ""),
+                        name=tool_call.get("function", {}).get("name", ""),
+                        arguments=tool_call.get("function", {}).get("arguments", "{}"),
+                    )
+                    for tool_call in (m.tool_calls or [])
+                ]
+                or None,
                 tool_call_id=m.tool_call_id,
             )
         )
@@ -114,12 +123,14 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
     memory_backend = getattr(request.app.state, "memory_backend", None)
     if (
         config is not None
-        and memory_backend is not None
         and config.agent.context_from_memory
         and request_body.messages
     ):
         try:
             from openjarvis.tools.storage.context import ContextConfig, inject_context
+
+            memory_service = getattr(request.app.state, "memory_service", None)
+            facts = memory_service.list_facts() if memory_service is not None else []
 
             # Extract query from the last user message
             query_text = ""
@@ -130,6 +141,7 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
 
             if query_text:
                 messages = _to_messages(request_body.messages)
+                messages = _ensure_identity_prompt(messages, config)
                 ctx_cfg = ContextConfig(
                     top_k=config.memory.context_top_k,
                     min_score=config.memory.context_min_score,
@@ -140,22 +152,35 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
                     messages,
                     memory_backend,
                     config=ctx_cfg,
+                    facts=facts,
                 )
-                # Rebuild request messages from enriched Message objects
-                if len(enriched) > len(messages):
-                    from openjarvis.server.models import ChatMessage
+                # Rebuild after identity/context merging so downstream engine
+                # adapters always receive exactly one system message.
+                from openjarvis.server.models import ChatMessage
 
-                    new_msgs = []
-                    for msg in enriched:
-                        new_msgs.append(
-                            ChatMessage(
-                                role=msg.role.value,
-                                content=msg.content,
-                                name=msg.name,
-                                tool_call_id=getattr(msg, "tool_call_id", None),
-                            )
+                new_msgs = []
+                for msg in enriched:
+                    new_msgs.append(
+                        ChatMessage(
+                            role=msg.role.value,
+                            content=msg.content,
+                            name=msg.name,
+                            tool_calls=[
+                                {
+                                    "id": tool_call.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tool_call.name,
+                                        "arguments": tool_call.arguments,
+                                    },
+                                }
+                                for tool_call in (msg.tool_calls or [])
+                            ]
+                            or None,
+                            tool_call_id=getattr(msg, "tool_call_id", None),
                         )
-                    request_body.messages = new_msgs
+                    )
+                request_body.messages = new_msgs
         except Exception:
             logging.getLogger("openjarvis.server").debug(
                 "Memory context injection failed",
