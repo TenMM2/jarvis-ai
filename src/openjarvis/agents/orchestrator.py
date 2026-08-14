@@ -151,7 +151,13 @@ class OrchestratorAgent(ToolUsingAgent):
                 tool_result = self._executor.execute(tool_call)
                 all_tool_results.append(tool_result)
 
-                observation = f"Observation: {tool_result.content}"
+                if tool_result.success:
+                    observation = f"Observation: {tool_result.content}"
+                else:
+                    observation = (
+                        f"Observation: Tool '{tool_result.tool_name}' failed: "
+                        f"{tool_result.content}"
+                    )
                 messages.append(Message(role=Role.USER, content=observation))
                 continue
 
@@ -171,32 +177,39 @@ class OrchestratorAgent(ToolUsingAgent):
         tool_name: str,
         raw_input: str,
     ) -> str:
-        """Map an unambiguous string input to the tool's JSON parameter."""
+        """Map unambiguous structured text input to a string parameter."""
         if not raw_input:
             return "{}"
 
         try:
             parsed_input = json.loads(raw_input)
         except json.JSONDecodeError:
-            parsed_input = raw_input
+            invalid_json = True
+            string_value = raw_input
+        else:
+            invalid_json = False
+            if isinstance(parsed_input, dict):
+                return raw_input
+            # INPUT is a text protocol. A non-object JSON value such as 42,
+            # true, null, or [1, 2] may still be the intended text for a tool's
+            # string parameter. Quoted JSON strings are decoded to remove only
+            # their surrounding quotes; other values retain their source text.
+            string_value = parsed_input if isinstance(parsed_input, str) else raw_input
 
-        if isinstance(parsed_input, dict):
-            return raw_input
-        if not isinstance(parsed_input, str):
-            return raw_input
-
-        tool = next(
-            (
-                candidate
-                for candidate in self._tools
-                if candidate.spec.name == tool_name
-            ),
-            None,
-        )
-        if tool is None:
+        tool_spec = None
+        for candidate in reversed(self._tools):
+            candidate_spec = candidate.spec
+            if candidate_spec.name == tool_name:
+                tool_spec = candidate_spec
+                break
+        if tool_spec is None:
             return raw_input
 
-        parameters = tool.spec.parameters
+        parameters = tool_spec.parameters
+        parameter_container_type = parameters.get("type")
+        if parameter_container_type not in (None, "object"):
+            return raw_input
+
         properties = parameters.get("properties", {})
         required = parameters.get("required", [])
         if not isinstance(properties, dict) or not isinstance(required, list):
@@ -210,13 +223,23 @@ class OrchestratorAgent(ToolUsingAgent):
             return raw_input
 
         parameter_schema = properties[parameter_name]
-        if isinstance(parameter_schema, dict) and parameter_schema.get("type") not in (
-            None,
-            "string",
-        ):
+        if not isinstance(parameter_schema, dict):
+            return raw_input
+        parameter_type = parameter_schema.get("type")
+        accepts_string = parameter_type == "string" or (
+            isinstance(parameter_type, list) and "string" in parameter_type
+        )
+        if not accepts_string:
             return raw_input
 
-        return json.dumps({parameter_name: parsed_input})
+        allow_object_text = (
+            tool_spec.metadata.get("structured_allow_object_text") is True
+        )
+        starts_like_object = raw_input.lstrip("\ufeff \t\r\n").startswith("{")
+        if invalid_json and starts_like_object and not allow_object_text:
+            return raw_input
+
+        return json.dumps({parameter_name: string_value})
 
     @staticmethod
     def _parse_structured_response(text: str) -> dict:
