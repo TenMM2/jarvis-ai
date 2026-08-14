@@ -847,6 +847,47 @@ class TestIdentityPromptInjection:
         assert len(system_msgs) == 1
         assert system_msgs[0].content == "Be terse."
 
+    def test_stream_uses_grounded_agent_result_without_replay(self):
+        """Regression for #734: web streaming emits the agent's final answer."""
+        from openjarvis.core.events import EventBus
+
+        captured: list = []
+        engine = _make_capturing_engine(captured)
+        agent = _make_agent(content="My name is Jarvis Prime.")
+        agent._tools = [object()]
+        agent._engine = engine
+        client = TestClient(
+            create_app(
+                engine,
+                "test-model",
+                agent=agent,
+                bus=EventBus(),
+                config=_identity_config(),
+            )
+        )
+
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "who are you?"}],
+                "stream": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        streamed_content = ""
+        for line in resp.text.splitlines():
+            if not line.startswith("data: {"):
+                continue
+            payload = json.loads(line.removeprefix("data: "))
+            choices = payload.get("choices", [])
+            if choices and choices[0]["delta"].get("content"):
+                streamed_content += choices[0]["delta"]["content"]
+        assert streamed_content == "My name is Jarvis Prime."
+        assert captured == []
+        agent.run.assert_called_once()
+
     def test_direct_injects_identity_when_absent(self):
         captured: list = []
         engine = _make_capturing_engine(captured)
