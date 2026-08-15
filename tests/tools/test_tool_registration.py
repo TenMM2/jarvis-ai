@@ -64,6 +64,8 @@ EXPECTED_TOOLS = {
     "image_generate",
     # audio_tool.py
     "audio_transcribe",
+    # text_to_speech.py
+    "text_to_speech",
     # knowledge_tools.py
     "kg_add_entity",
     "kg_add_relation",
