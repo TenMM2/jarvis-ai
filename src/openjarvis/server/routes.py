@@ -66,8 +66,10 @@ def _ensure_identity_prompt(messages: list[Message], app_config) -> list[Message
     ``SystemPromptBuilder`` / ``BaseAgent``; the engine-direct server paths
     did not. This mirrors the agent fallback in ``agents/_stubs.py``.
 
-    If any message already carries a system role, the caller has supplied
-    their own grounding and we leave the list untouched (no double-prompting).
+    If any caller-supplied message already carries a system role, the caller
+    has supplied their own grounding and we leave the list untouched (no
+    double-prompting). Internally tagged memory context does not count as
+    caller grounding.
 
     Resolution of the identity text: the config comes from ``app.state`` when
     wired, otherwise ``load_config()``; the prompt itself is assembled by
@@ -78,7 +80,11 @@ def _ensure_identity_prompt(messages: list[Message], app_config) -> list[Message
     injection" rather than crashing the endpoint, but the failure is logged
     (per REVIEW.md — never silently swallow).
     """
-    if any(m.role == Role.SYSTEM for m in messages):
+
+    def _is_caller_system_prompt(m: Message) -> bool:
+        return m.role == Role.SYSTEM and not m.metadata.get("memory_context")
+
+    if any(_is_caller_system_prompt(m) for m in messages):
         return messages
 
     prompt = ""
