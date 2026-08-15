@@ -41,10 +41,19 @@ def _fake_engine() -> MagicMock:
     return engine
 
 
-def test_serve_wires_persona_builder_into_served_agent(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "agent_name",
+    ["simple", "orchestrator", "monitor_operative", "operative"],
+)
+def test_serve_wires_persona_builder_into_served_agent(
+    tmp_path, monkeypatch, agent_name
+):
     """The agent built on the serve path must carry a SystemPromptBuilder whose
     assembled prompt includes SOUL.md content (regression for the HTTP persona
     loss)."""
+    from openjarvis.agents.monitor_operative import MonitorOperativeAgent
+    from openjarvis.agents.operative import OperativeAgent
+    from openjarvis.agents.orchestrator import OrchestratorAgent
     from openjarvis.agents.simple import SimpleAgent
     from openjarvis.core.config import JarvisConfig
     from openjarvis.core.registry import AgentRegistry
@@ -54,9 +63,14 @@ def test_serve_wires_persona_builder_into_served_agent(tmp_path, monkeypatch):
     soul.write_text("SERVE_PERSONA_SENTINEL", encoding="utf-8")
 
     # conftest clears registries per-test; re-register the agent we exercise.
-    # (SimpleAgent extends BaseAgent, whose __init__ accepts ``prompt_builder``.)
-    if not AgentRegistry.contains("simple"):
-        AgentRegistry.register_value("simple", SimpleAgent)
+    agent_classes = {
+        "simple": SimpleAgent,
+        "orchestrator": OrchestratorAgent,
+        "monitor_operative": MonitorOperativeAgent,
+        "operative": OperativeAgent,
+    }
+    if not AgentRegistry.contains(agent_name):
+        AgentRegistry.register_value(agent_name, agent_classes[agent_name])
 
     config = JarvisConfig()
     config.server.host = "127.0.0.1"
@@ -95,7 +109,7 @@ def test_serve_wires_persona_builder_into_served_agent(tmp_path, monkeypatch):
         patch("uvicorn.run", lambda *a, **k: None),
     ):
         result = CliRunner().invoke(
-            cli, ["serve", "--agent", "simple"], catch_exceptions=False
+            cli, ["serve", "--agent", agent_name], catch_exceptions=False
         )
 
     assert result.exit_code == 0, result.output
@@ -107,7 +121,7 @@ def test_serve_wires_persona_builder_into_served_agent(tmp_path, monkeypatch):
     # The regression: without the fix ``agent._prompt_builder`` is None and the
     # persona files never reach the model over HTTP.
     assert agent._prompt_builder is not None, (
-        "serve constructed the agent without a prompt_builder — SOUL.md / "
+        f"serve constructed {agent_name} without a prompt_builder — SOUL.md / "
         "MEMORY.md / USER.md would be silently dropped on the HTTP path."
     )
     assert "SERVE_PERSONA_SENTINEL" in agent._prompt_builder.build(), (

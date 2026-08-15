@@ -372,8 +372,8 @@ def serve(
                 # this since the persona system landed; ``serve.py`` never did,
                 # so an agent served over HTTP silently answered as a generic
                 # assistant while the same agent via the CLI kept its persona.
-                # Guarded so agents whose ``__init__`` doesn't accept the kwarg
-                # (e.g. OrchestratorAgent) opt out automatically.
+                # Guarded so agents with specialized prompt machinery must opt
+                # in by explicitly naming and forwarding the kwarg.
                 import inspect as _inspect
 
                 if (
