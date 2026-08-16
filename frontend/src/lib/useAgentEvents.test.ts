@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildWsUrl } from './useAgentEvents';
+import { buildWsProtocols, buildWsUrl } from './useAgentEvents';
 
 const SETTINGS_KEY = 'openjarvis-settings';
 
@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 describe('buildWsUrl', () => {
-  it('authenticates agent events with the configured API key', () => {
+  it('builds the agent-events URL without leaking the API key into it', () => {
     localStorage.setItem(
       SETTINGS_KEY,
       JSON.stringify({
@@ -41,7 +41,8 @@ describe('buildWsUrl', () => {
     expect(url.origin).toBe('wss://jarvis.example.com:8443');
     expect(url.pathname).toBe('/v1/agents/events');
     expect(url.searchParams.get('agent_id')).toBe('agent/one');
-    expect(url.searchParams.get('token')).toBe('secret+/=');
+    expect(url.searchParams.has('token')).toBe(false);
+    expect(url.toString()).not.toContain('secret');
   });
 
   it('normalizes a versioned API base without duplicating /v1', () => {
@@ -52,15 +53,33 @@ describe('buildWsUrl', () => {
 
     expect(buildWsUrl()).toBe('ws://192.0.2.10:8000/v1/agents/events');
   });
+});
 
-  it('omits the token for a keyless server', () => {
+describe('buildWsProtocols', () => {
+  it.each([
+    ['secret+/=', 'c2VjcmV0Ky89'],
+    ['bearer', 'YmVhcmVy'],
+    ['sëcret🔑', 'c8OrY3JldPCflJE'],
+  ])('offers a browser-safe encoding of API key %j', (apiKey, encoded) => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ apiKey }));
+
+    const protocols = buildWsProtocols();
+
+    expect(protocols).toEqual([
+      'openjarvis.auth.v1',
+      `openjarvis.key.b64url.${encoded}`,
+    ]);
+    expect(new Set(protocols).size).toBe(protocols?.length);
+    expect(protocols?.every((value) => /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(value)))
+      .toBe(true);
+  });
+
+  it('omits protocols for a keyless server', () => {
     localStorage.setItem(
       SETTINGS_KEY,
       JSON.stringify({ apiUrl: 'http://localhost:8000' }),
     );
 
-    const url = new URL(buildWsUrl('agent-one'));
-
-    expect(url.searchParams.has('token')).toBe(false);
+    expect(buildWsProtocols()).toBeUndefined();
   });
 });
