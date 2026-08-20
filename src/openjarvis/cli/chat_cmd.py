@@ -13,6 +13,7 @@ from rich.markup import escape
 
 from openjarvis.cli._runtime_panel import runtime_cli_options
 from openjarvis.cli._tool_names import resolve_tool_names
+from openjarvis.cli._voice_chat import VOICE_EXIT, VoiceSession, read_voice_input, speak
 from openjarvis.core.config import load_config
 from openjarvis.core.events import EventBus
 from openjarvis.core.types import Message, Role
@@ -70,6 +71,13 @@ def _read_input(prompt: str = "You> ") -> Optional[str]:
         "(overrides config). Pass 'none' to disable all persona files."
     ),
 )
+@click.option(
+    "--voice",
+    "voice_mode",
+    is_flag=True,
+    default=False,
+    help="Enable voice I/O: mic input with silence detection + TTS response playback.",
+)
 @runtime_cli_options
 def chat(
     engine_key: str | None,
@@ -79,6 +87,7 @@ def chat(
     tools: str | None,
     system_prompt: str | None,
     persona_name: str | None,
+    voice_mode: bool,
     num_ctx: int | None,
     num_gpu: int | None,
     skip_runtime_panel: bool,
@@ -97,6 +106,9 @@ def chat(
       /runtime      — Ollama context + GPU offload for this session
       /help         — show available commands
       /history      — show conversation history
+
+    Pass --voice to use microphone input (silence-detection) and hear responses
+    read back via text-to-speech (kokoro local or OpenAI TTS).
     """
     console = Console(stderr=True)
 
@@ -247,13 +259,24 @@ def chat(
                 f"{escape(str(exc))}[/yellow]"
             )
 
+    # Keep voice state outside the core chat path so picker/runtime changes can
+    # be layered independently. Loaded speech models live for this session.
+    voice_session = VoiceSession(config) if voice_mode else None
+
     # Print banner
+    voice_hint = (
+        "  [magenta]Voice mode ON[/magenta] — type normally, or press Enter "
+        "to speak; silence stops recording.\n"
+        if voice_mode
+        else ""
+    )
     console.print(
         f"[green bold]OpenJarvis Chat[/green bold]\n"
         f"  Engine: [cyan]{_safe_rich_label(engine_name)}[/cyan]  "
         f"Model: [cyan]{_safe_rich_label(model)}[/cyan]"
         f"  Agent: [cyan]{_safe_rich_label(agent_key or 'direct')}[/cyan]\n"
         f"  Runtime: [cyan]{runtime_opts.summary(engine_name=engine_name)}[/cyan]\n"
+        f"{voice_hint}"
         f"  Type /help for commands, /quit to exit.\n",
     )
 
@@ -312,14 +335,23 @@ def chat(
         for note in _notifications.diff(get_status()):
             console.print(f"[dim cyan]{note}[/dim cyan]")
 
-        user_input = _read_input()
-        if user_input is None:
-            console.print("\n[dim]Goodbye![/dim]")
-            break
-
-        user_input = user_input.strip()
-        if not user_input:
-            continue
+        if voice_mode:
+            assert voice_session is not None
+            result = read_voice_input(console, voice_session)
+            if result is VOICE_EXIT:
+                console.print("\n[dim]Goodbye![/dim]")
+                break
+            if result is None:
+                continue  # nothing heard, loop again
+            user_input = result
+        else:
+            user_input = _read_input()
+            if user_input is None:
+                console.print("\n[dim]Goodbye![/dim]")
+                break
+            user_input = user_input.strip()
+            if not user_input:
+                continue
 
         # Handle slash commands
         cmd = user_input.lower()
@@ -434,6 +466,9 @@ def chat(
             console.print()
             console.print(Markdown(content))
             console.print()
+            if voice_mode:
+                assert voice_session is not None
+                speak(content, console, voice_session)
 
             publish_completed_exchange(
                 bus,
