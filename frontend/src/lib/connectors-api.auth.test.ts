@@ -95,6 +95,51 @@ describe('connectors-api sends the Bearer auth header', () => {
     expect(authHeaderSent()).toBe('Bearer sk-local-123');
   });
 
+  it('disconnectSource surfaces a 409 with its actionable backend detail', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: "Sync for 'gmail' is still stopping; indexed content was not purged",
+        }),
+        {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    );
+    const { ConnectorApiError, disconnectSource } = await freshConnectorsApi();
+
+    await expect(disconnectSource('gmail')).rejects.toEqual(
+      expect.objectContaining({
+        name: ConnectorApiError.name,
+        status: 409,
+        message: expect.stringContaining('still stopping'),
+      }),
+    );
+  });
+
+  it('keeps a pending disconnect active and retries until cleanup succeeds', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: 'Sync is still stopping' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+      .mockResolvedValueOnce(okJson({ status: 'disconnected' }));
+    const onPending = vi.fn();
+    const { disconnectSourceUntilComplete } = await freshConnectorsApi();
+
+    await disconnectSourceUntilComplete('gmail', {
+      retryDelayMs: 0,
+      onPending,
+    });
+
+    expect(onPending).toHaveBeenCalledOnce();
+    expect(onPending).toHaveBeenCalledWith('Sync is still stopping');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('getSyncStatus', async () => {
     fetchMock.mockResolvedValue(okJson({}));
     const { getSyncStatus } = await freshConnectorsApi();
@@ -107,5 +152,33 @@ describe('connectors-api sends the Bearer auth header', () => {
     const { triggerSync } = await freshConnectorsApi();
     await triggerSync('gmail');
     expect(authHeaderSent()).toBe('Bearer sk-local-123');
+  });
+
+  it('OAuth polling waits for a real connected state before resolving', async () => {
+    vi.useFakeTimers();
+    const open = vi.fn();
+    vi.stubGlobal('window', { open });
+    try {
+      fetchMock
+        .mockResolvedValueOnce(okJson({ connected: false }))
+        .mockResolvedValueOnce(okJson({ connected: true }));
+      const { startServerOAuth } = await freshConnectorsApi();
+
+      let resolved = false;
+      const flow = startServerOAuth('spotify').then(() => {
+        resolved = true;
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(resolved).toBe(false);
+      await vi.advanceTimersByTimeAsync(2000);
+      await flow;
+
+      expect(resolved).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(open).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });

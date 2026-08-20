@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 import threading
 import time
 from pathlib import Path
@@ -556,3 +559,151 @@ def test_connect_granola_invalid_key_returns_400_keeps_existing(
         assert json.loads(creds.read_text())["token"] == "grl_real_existing_key"
     finally:
         _instances.pop("granola", None)
+
+
+@pytest.mark.parametrize(
+    ("connector_id", "filename", "payload", "expected"),
+    [
+        (
+            "github_notifications",
+            "github.json",
+            {"token": "ghp_test"},
+            {"token": "ghp_test"},
+        ),
+        ("oura", "oura.json", {"token": "oura_test"}, {"token": "oura_test"}),
+        (
+            "weather",
+            "weather.json",
+            {"token": "weather_key", "config": {"location": "Boston,US"}},
+            {"api_key": "weather_key", "location": "Boston,US"},
+        ),
+    ],
+)
+def test_connect_persists_generic_token_connector_credentials(
+    app,
+    tmp_path: Path,
+    monkeypatch,
+    connector_id: str,
+    filename: str,
+    payload: dict,
+    expected: dict,
+) -> None:
+    """The generic token panel must actually configure each token connector."""
+
+    from openjarvis.connectors.github_notifications import GitHubNotificationsConnector
+    from openjarvis.connectors.oura import OuraConnector
+    from openjarvis.connectors.weather import WeatherConnector
+    from openjarvis.core.registry import ConnectorRegistry
+    from openjarvis.server.connectors_router import _instances
+
+    path = tmp_path / filename
+    constructors = {
+        "github_notifications": lambda: GitHubNotificationsConnector(
+            token_path=str(path)
+        ),
+        "oura": lambda: OuraConnector(token_path=str(path)),
+        "weather": lambda: WeatherConnector(token_path=str(path)),
+    }
+    instance = constructors[connector_id]()
+    ConnectorRegistry.register_value(connector_id, type(instance))
+    validators = {
+        "github_notifications": (
+            "openjarvis.connectors.github_notifications._github_api_get",
+            [],
+        ),
+        "oura": ("openjarvis.connectors.oura._oura_api_get", {}),
+        "weather": ("openjarvis.connectors.weather._weather_api_get", {}),
+    }
+    target, result = validators[connector_id]
+    monkeypatch.setattr(target, lambda *args, **kwargs: result)
+    # The endpoint deliberately starts an asynchronous initial sync.  Replace
+    # it with an empty iterator so this endpoint test never reaches a real API.
+    instance.sync = lambda **_kwargs: iter(())
+    _instances[connector_id] = instance
+    try:
+        resp = app.post(f"/v1/connectors/{connector_id}/connect", json=payload)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["connected"] is True
+        assert json.loads(path.read_text()) == expected
+        if os.name != "nt":
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    finally:
+        _instances.pop(connector_id, None)
+
+
+def test_invalid_token_is_not_persisted_or_synced(app, tmp_path, monkeypatch) -> None:
+    """Validation failure preserves an existing credential byte-for-byte."""
+    from openjarvis.connectors.github_notifications import (
+        GitHubNotificationsConnector,
+    )
+    from openjarvis.core.registry import ConnectorRegistry
+    from openjarvis.server.connectors_router import _instances
+
+    path = tmp_path / "github.json"
+    original = '{"token":"known-good"}'
+    path.write_text(original, encoding="utf-8")
+    instance = GitHubNotificationsConnector(token_path=str(path))
+    ConnectorRegistry.register_value("github_notifications", type(instance))
+    sync_called = False
+
+    def sync(**kwargs):
+        nonlocal sync_called
+        sync_called = True
+        return iter(())
+
+    instance.sync = sync
+    monkeypatch.setattr(
+        "openjarvis.connectors.github_notifications._github_api_get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("401 Unauthorized")),
+    )
+    _instances["github_notifications"] = instance
+    try:
+        response = app.post(
+            "/v1/connectors/github_notifications/connect",
+            json={"token": "bad-token"},
+        )
+        assert response.status_code == 400
+        assert path.read_text(encoding="utf-8") == original
+        assert sync_called is False
+    finally:
+        _instances.pop("github_notifications", None)
+
+
+def test_connect_weather_requires_location(app, tmp_path: Path) -> None:
+    """Weather must not report connected with an API key it cannot use."""
+    from openjarvis.connectors.weather import WeatherConnector
+    from openjarvis.server.connectors_router import _instances
+
+    path = tmp_path / "weather.json"
+    _instances["weather"] = WeatherConnector(token_path=str(path))
+    try:
+        resp = app.post("/v1/connectors/weather/connect", json={"token": "weather_key"})
+        assert resp.status_code == 400
+        assert "location" in resp.json()["detail"].lower()
+        assert not path.exists()
+    finally:
+        _instances.pop("weather", None)
+
+
+def test_connect_news_rss_requires_and_persists_feeds(app, tmp_path: Path) -> None:
+    """A local connector with required setup cannot claim success for ``{}``."""
+    from openjarvis.connectors.news_rss import NewsRSSConnector
+    from openjarvis.server.connectors_router import _instances
+
+    path = tmp_path / "news_rss.json"
+    instance = NewsRSSConnector(config_path=str(path))
+    instance.sync = lambda **_kwargs: iter(())
+    _instances["news_rss"] = instance
+    try:
+        assert app.post("/v1/connectors/news_rss/connect", json={}).status_code == 400
+        resp = app.post(
+            "/v1/connectors/news_rss/connect",
+            json={"config": {"feeds": [{"url": "https://example.com/feed.xml"}]}},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["connected"] is True
+        assert json.loads(path.read_text())["feeds"] == [
+            {"name": "example.com", "url": "https://example.com/feed.xml"}
+        ]
+    finally:
+        _instances.pop("news_rss", None)
