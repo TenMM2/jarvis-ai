@@ -178,27 +178,32 @@ class BaseAgent(ABC):
                 effective_system_prompt = cfg.agent.default_system_prompt or None
             except Exception:
                 effective_system_prompt = None
-        if effective_system_prompt:
-            context_system_text = "\n\n".join(
-                message.text
-                for message in context_messages
-                if message.role == Role.SYSTEM
-                and message.metadata.get("memory_context")
-                and message.text
+        # Fold ALL in-context system messages (both auto-captured memory
+        # context and caller-supplied system messages) into one leading system
+        # message. Do this even when there is no independently-built prompt:
+        # Qwen-family chat templates reject a system message after the first
+        # slot or more than one system message. Empty system messages must be
+        # removed too, otherwise they can leave a second system entry behind.
+        identity_already_applied = any(
+            message.role == Role.SYSTEM
+            and message.metadata.get("openjarvis_identity_prompt")
+            for message in context_messages
+        )
+        system_parts = []
+        if effective_system_prompt and not identity_already_applied:
+            system_parts.append(effective_system_prompt)
+        system_parts.extend(
+            message.text
+            for message in context_messages
+            if message.role == Role.SYSTEM and message.text
+        )
+        context_messages = [
+            message for message in context_messages if message.role != Role.SYSTEM
+        ]
+        if system_parts:
+            messages.append(
+                Message(role=Role.SYSTEM, content="\n\n".join(system_parts))
             )
-            if context_system_text:
-                effective_system_prompt = (
-                    f"{effective_system_prompt}\n\n{context_system_text}"
-                )
-                context_messages = [
-                    message
-                    for message in context_messages
-                    if not (
-                        message.role == Role.SYSTEM
-                        and message.metadata.get("memory_context")
-                    )
-                ]
-            messages.append(Message(role=Role.SYSTEM, content=effective_system_prompt))
         if context_messages:
             messages.extend(context_messages)
         messages.append(Message(role=Role.USER, content=input))
