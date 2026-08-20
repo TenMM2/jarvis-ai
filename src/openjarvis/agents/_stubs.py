@@ -18,6 +18,8 @@ from openjarvis.core.events import EventBus, EventType
 from openjarvis.core.types import Conversation, Message, Role, ToolResult
 from openjarvis.engine._stubs import InferenceEngine
 
+_ALLOWED_ENGINE_OPTION_KEYS = frozenset({"num_ctx", "num_gpu"})
+
 
 @dataclass(slots=True)
 class AgentContext:
@@ -71,11 +73,13 @@ class BaseAgent(ABC):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         prompt_builder: Optional[Any] = None,
+        engine_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._engine = engine
         self._model = model
         self._bus = bus
         self._prompt_builder = prompt_builder
+        self._engine_options: Dict[str, Any] = dict(engine_options or {})
 
         # Three-tier resolution: explicit arg > config > class default > hardcoded
         if temperature is not None and max_tokens is not None:
@@ -223,12 +227,23 @@ class BaseAgent(ABC):
                 {"model": self._model, "engine": engine_id},
             )
 
+        # Stored engine options originate in CLI/runtime configuration and are
+        # intentionally allowlisted. Per-call kwargs originate in the agent
+        # implementation itself (for example ``tools`` or ``response_format``)
+        # and must reach the engine adapter unchanged. Filtering the merged
+        # mapping silently stripped function-calling tools from every agent.
+        gen_kwargs = {
+            key: value
+            for key, value in self._engine_options.items()
+            if key in _ALLOWED_ENGINE_OPTION_KEYS
+        }
+        gen_kwargs.update(extra_kwargs)
         result = self._engine.generate(
             messages,
             model=self._model,
             temperature=self._temperature,
             max_tokens=self._max_tokens,
-            **extra_kwargs,
+            **gen_kwargs,
         )
 
         if self._bus and not getattr(self._engine, "_publishes_events", False):
