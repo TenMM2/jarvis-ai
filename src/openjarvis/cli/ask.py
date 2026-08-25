@@ -34,6 +34,24 @@ from openjarvis.telemetry.store import TelemetryStore
 
 logger = logging.getLogger(__name__)
 
+# Engines that run inference on this machine. Used by the image privacy guard
+# below: a screenshot is sensitive and OpenJarvis is local-first, so sending
+# one to a non-local engine warrants a warning first. Module-level so it can be
+# asserted against directly -- an engine missing from here produces a false
+# "your image is leaving this machine" warning.
+LOCAL_ENGINES = {
+    "afm",
+    "apple_fm",
+    "exo",
+    "gemma_cpp",
+    "llamacpp",
+    "nexa",
+    "ollama",
+    "sglang",
+    "uzu",
+    "vllm",
+}
+
 
 def _run_research(
     *,
@@ -833,6 +851,7 @@ def ask(
 
             energy_monitor = create_energy_monitor(
                 prefer_vendor=config.telemetry.energy_vendor or None,
+                allow_estimates=config.telemetry.allow_energy_estimates,
             )
         except Exception as exc:
             logger.debug("Failed to create energy monitor: %s", exc)
@@ -943,21 +962,7 @@ def ask(
         return
 
     # Direct-to-engine mode (no agent)
-    # Privacy guard: a screenshot/image is sensitive, and OpenJarvis is
-    # local-first. If the active engine isn't local, warn before the image
-    # leaves the machine rather than silently uploading it to a third party.
-    _LOCAL_ENGINES = {
-        "ollama",
-        "llamacpp",
-        "vllm",
-        "sglang",
-        "exo",
-        "nexa",
-        "uzu",
-        "apple_fm",
-        "gemma_cpp",
-    }
-    if image_b64 and engine_name not in _LOCAL_ENGINES:
+    if image_b64 and engine_name not in LOCAL_ENGINES:
         console.print(
             f"[yellow]Privacy warning:[/yellow] sending {len(image_b64)} "
             f"image(s) to a non-local engine ('{engine_name}'). The image will "

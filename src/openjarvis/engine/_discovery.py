@@ -28,6 +28,8 @@ _HOST_MAP: Dict[str, str | None] = {
     "cloud": None,
     "litellm": None,
     "gemma_cpp": None,
+    # In-process: drives the Apple FM SDK directly, so there is no host.
+    "afm": None,
 }
 
 
@@ -49,6 +51,16 @@ def _make_engine(key: str, config: JarvisConfig) -> InferenceEngine:
             tokenizer_path=cfg.tokenizer_path or None,
             model_type=cfg.model_type or None,
             num_threads=cfg.num_threads,
+        )
+
+    # afm: in-process engine, configured by behaviour rather than a host
+    if key == "afm":
+        cfg = config.engine.afm
+        return cls(
+            instructions=cfg.instructions,
+            use_case=cfg.use_case,
+            guardrails=cfg.guardrails,
+            sampling=cfg.sampling,
         )
 
     host_attr = _HOST_MAP.get(key)

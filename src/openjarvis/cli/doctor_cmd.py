@@ -206,7 +206,12 @@ def _check_optional_deps() -> List[CheckResult]:
         ("pynvml", "openjarvis[gpu-metrics]", "NVIDIA energy monitoring"),
         ("amdsmi", "openjarvis[energy-amd]", "AMD energy monitoring"),
         ("colbert", "openjarvis[memory-colbert]", "ColBERT memory backend"),
-        ("zeus", "openjarvis[energy-apple]", "Apple Silicon energy monitoring"),
+        (
+            "zeus_apple_silicon",
+            "openjarvis[energy-apple]",
+            "Apple Silicon energy monitoring",
+        ),
+        ("apple_fm_sdk", "openjarvis[afm]", "Apple Foundation Models (AFM 3)"),
     ]
     for pkg, install_hint, description in optional_packages:
         try:

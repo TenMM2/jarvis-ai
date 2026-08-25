@@ -1015,6 +1015,55 @@ BUILTIN_MODELS: List[ModelSpec] = [
             "url": "https://ai.google.dev/gemini-api/docs/models",
         },
     ),
+    # -----------------------------------------------------------------------
+    # Apple Foundation Models (on-device, AFM 3)
+    #
+    # These ids are run *labels*, not selectors: the Foundation Models
+    # framework's dynamic profile picks AFM 3 Core (dense ~3B) or AFM 3 Core
+    # Advanced (20B sparse MoE, 1-4B active) from the host device, and the SDK
+    # exposes no way to choose. Requesting one label does not guarantee that
+    # variant executed -- `AppleFMEngine.describe()` records the host chip and
+    # SDK version so a run can be attributed after the fact.
+    # -----------------------------------------------------------------------
+    ModelSpec(
+        model_id="afm-3",
+        name="Apple Foundation Model 3",
+        parameter_count_b=3.0,
+        context_length=4096,
+        supported_engines=("afm", "apple_fm"),
+        provider="apple",
+        metadata={
+            "architecture": "dense",
+            "variant_selection": "device-chosen; model id is a label only",
+        },
+    ),
+    ModelSpec(
+        model_id="afm-3-core",
+        name="Apple Foundation Model 3 Core",
+        parameter_count_b=3.0,
+        context_length=4096,
+        supported_engines=("afm", "apple_fm"),
+        provider="apple",
+        metadata={
+            "architecture": "dense",
+            "variant_selection": "device-chosen; model id is a label only",
+        },
+    ),
+    ModelSpec(
+        model_id="afm-3-core-advanced",
+        name="Apple Foundation Model 3 Core Advanced",
+        # 20B total, but Instruction-Following Pruning activates only 1-4B per
+        # request; the 4B upper bound is what FLOPs accounting should use.
+        parameter_count_b=20.0,
+        active_parameter_count_b=4.0,
+        context_length=4096,
+        supported_engines=("afm", "apple_fm"),
+        provider="apple",
+        metadata={
+            "architecture": "sparse-moe",
+            "variant_selection": "device-chosen; model id is a label only",
+        },
+    ),
 ]
 
 

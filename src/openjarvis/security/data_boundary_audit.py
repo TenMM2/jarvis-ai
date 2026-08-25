@@ -33,6 +33,10 @@ CLOUD_PROVIDER_KEYS = {
 }
 
 LOCAL_ENGINE_KEYS = {
+    # Apple Foundation Models, both the in-process engine and the shim. The
+    # Python SDK has no Private Cloud Compute path, so inference is
+    # unconditionally on-device.
+    "afm",
     "apple_fm",
     "exo",
     "gemma_cpp",

@@ -24,10 +24,14 @@ logger = logging.getLogger(__name__)
 def _register_optional_engines() -> None:
     """Register available optional engines and retain import diagnostics."""
 
-    for optional in ("cloud", "litellm", "gemma_cpp"):
+    # OSError is caught alongside ImportError for apple_fm: its Swift bindings
+    # load at import time and raise OSError, not ImportError, on a host whose
+    # macOS or Xcode is too old. Letting that escape would take down every
+    # other engine too.
+    for optional in ("cloud", "litellm", "gemma_cpp", "apple_fm"):
         try:
             importlib.import_module(f".{optional}", __name__)
-        except ImportError as exc:
+        except (ImportError, OSError) as exc:
             logger.debug("Optional engine %r unavailable: %s", optional, exc)
 
 
