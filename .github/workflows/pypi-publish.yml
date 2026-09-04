@@ -98,6 +98,36 @@ jobs:
       - name: Build package
         run: uv build
 
+      - name: Validate release artifacts
+        run: |
+          set -euo pipefail
+          # Keep this check in the workflow: the target tag may predate it.
+          uv run --no-project python - <<'PY'
+          from pathlib import Path
+
+          max_artifact_bytes = 20 * 1024 * 1024
+          wheels = sorted(Path("dist").glob("*.whl"))
+          sdists = sorted(Path("dist").glob("*.tar.gz"))
+          if not wheels or not sdists:
+              raise SystemExit(
+                  "Expected at least one wheel and one .tar.gz source archive"
+              )
+
+          oversized = []
+          for artifact in [*wheels, *sdists]:
+              size = artifact.stat().st_size
+              print(f"{artifact.name}: {size:,} bytes ({size / 1024**2:.2f} MiB)")
+              if size > max_artifact_bytes:
+                  oversized.append(artifact.name)
+          if oversized:
+              raise SystemExit(
+                  "Archive exceeds the 20 MiB upload budget: "
+                  + ", ".join(oversized)
+                  + ". Check for bundled build outputs or native binaries."
+              )
+          PY
+          uvx twine check --strict dist/*
+
       - name: Publish to TestPyPI (dry run)
         if: ${{ inputs.dry_run }}
         env:
@@ -106,7 +136,7 @@ jobs:
           set -euo pipefail
           if [[ -z "${UV_PUBLISH_TOKEN:-}" ]]; then
             echo "::warning::TEST_PYPI_API_TOKEN is not set — skipping the TestPyPI upload."
-            echo "Build + twine check passed, which validated version derivation and packaging end to end."
+            echo "Build, archive size checks, and strict twine validation passed."
             echo "To exercise a real upload, add a TEST_PYPI_API_TOKEN secret (or a TestPyPI trusted publisher)."
             exit 0
           fi
