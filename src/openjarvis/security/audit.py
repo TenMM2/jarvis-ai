@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
+from functools import wraps
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -16,6 +18,17 @@ from openjarvis.security.types import (
     SecurityEventType,
     ThreatLevel,
 )
+
+
+def _db_locked(func):
+    """Serialize access to an audit connection shared by worker threads."""
+
+    @wraps(func)
+    def wrapped(self, *args, **kwargs):
+        with self._db_lock:
+            return func(self, *args, **kwargs)
+
+    return wrapped
 
 
 class AuditLogger:
@@ -39,6 +52,7 @@ class AuditLogger:
         from openjarvis.security.file_utils import secure_create
 
         secure_create(self._db_path)
+        self._db_lock = threading.RLock()
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.execute(
             """
@@ -62,6 +76,7 @@ class AuditLogger:
             bus.subscribe(EventType.SECURITY_ALERT, self._on_event)
             bus.subscribe(EventType.SECURITY_BLOCK, self._on_event)
 
+    @_db_locked
     def _migrate_schema(self) -> None:
         """Add row_hash/prev_hash columns if missing (schema migration)."""
         columns = {
@@ -82,6 +97,7 @@ class AuditLogger:
 
     # -- public API ----------------------------------------------------------
 
+    @_db_locked
     def log(self, event: SecurityEvent) -> None:
         """Insert a security event into the audit log with Merkle hash chain."""
         findings_json = json.dumps(
@@ -98,33 +114,41 @@ class AuditLogger:
             ]
         )
 
-        # Compute hash chain
-        prev_hash = self.tail_hash()
-        hash_input = (
-            f"{prev_hash}|{event.timestamp}|{event.event_type.value}"
-            f"|{findings_json}|{event.content_preview}|{event.action_taken}"
-        )
-        row_hash = hashlib.sha256(hash_input.encode()).hexdigest()
+        # Serialize writers across both threads and independent connections.
+        # A deferred transaction would let two writers read the same tail
+        # before either insert commits, breaking the Merkle chain.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            prev_hash = self.tail_hash()
+            hash_input = (
+                f"{prev_hash}|{event.timestamp}|{event.event_type.value}"
+                f"|{findings_json}|{event.content_preview}|{event.action_taken}"
+            )
+            row_hash = hashlib.sha256(hash_input.encode()).hexdigest()
 
-        self._conn.execute(
-            """
-            INSERT INTO security_events
-                (timestamp, event_type, findings_json, content_preview,
-                 action_taken, row_hash, prev_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.timestamp,
-                event.event_type.value,
-                findings_json,
-                event.content_preview,
-                event.action_taken,
-                row_hash,
-                prev_hash,
-            ),
-        )
-        self._conn.commit()
+            self._conn.execute(
+                """
+                INSERT INTO security_events
+                    (timestamp, event_type, findings_json, content_preview,
+                     action_taken, row_hash, prev_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.timestamp,
+                    event.event_type.value,
+                    findings_json,
+                    event.content_preview,
+                    event.action_taken,
+                    row_hash,
+                    prev_hash,
+                ),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
+    @_db_locked
     def query(
         self,
         *,
@@ -177,6 +201,7 @@ class AuditLogger:
             )
         return events
 
+    @_db_locked
     def tail_hash(self) -> str:
         """Return the hash of the last row in the chain, or empty string."""
         row = self._conn.execute(
@@ -184,6 +209,7 @@ class AuditLogger:
         ).fetchone()
         return row[0] if row and row[0] else ""
 
+    @_db_locked
     def verify_chain(self) -> Tuple[bool, Optional[int]]:
         """Verify the Merkle hash chain integrity.
 
@@ -217,11 +243,13 @@ class AuditLogger:
 
         return True, None
 
+    @_db_locked
     def count(self) -> int:
         """Return the total number of logged security events."""
         row = self._conn.execute("SELECT COUNT(*) FROM security_events").fetchone()
         return row[0] if row else 0
 
+    @_db_locked
     def close(self) -> None:
         """Close the SQLite connection."""
         self._conn.close()
