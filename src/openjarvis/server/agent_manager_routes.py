@@ -238,6 +238,8 @@ class _LightweightSystem:
         self.model = model
         self.config = config
         self._runtime = runtime
+        self.capability_policy = getattr(runtime, "capability_policy", None)
+        self.rate_limiter = getattr(runtime, "rate_limiter", None)
         # Wire the configured memory backend so an agent's memory_store /
         # memory_retrieve tools work when the tick runs through the server.
         # The executor injects system.memory_backend into those tools; this
@@ -1018,6 +1020,10 @@ async def _stream_managed_agent(
                     engine=engine,
                     model=model,
                     tools=dr_tools,
+                    bus=getattr(app_state, "bus", None),
+                    capability_policy=getattr(app_state, "capability_policy", None),
+                    rate_limiter=getattr(app_state, "rate_limiter", None),
+                    agent_id=agent_id,
                     max_turns=int(config.get("max_turns", 8)),
                     temperature=float(config.get("temperature", 0.3)),
                     interactive=True,
@@ -1302,11 +1308,18 @@ async def _stream_managed_agent(
     from openjarvis.tools._stubs import ToolExecutor
 
     resolved_by_name = resolved_toolkit.by_name
+    # Previously constructed with no capability_policy/rate_limiter/agent_id
+    # at all — this is the live SSE chat path for managed agents (what
+    # Tailscale/remote exposure actually hits), so tool calls made here ran
+    # with zero RBAC gating and zero rate limiting regardless of config.
     stream_tool_executor = ToolExecutor(
         tools=resolved_toolkit.instances,
         bus=bus,
         interactive=True,
         confirm_callback=lambda _prompt: True,
+        capability_policy=getattr(app_state, "capability_policy", None),
+        rate_limiter=getattr(app_state, "rate_limiter", None),
+        agent_id=agent_id,
     )
 
     # Forward any per-agent sampler params (repetition_penalty, top_p, …) so
@@ -1857,6 +1870,16 @@ def create_agent_manager_router(
                                     engine=engine,
                                     model=getattr(engine, "_model", ""),
                                     tools=tools,
+                                    bus=getattr(request.app.state, "bus", None),
+                                    capability_policy=getattr(
+                                        request.app.state,
+                                        "capability_policy",
+                                        None,
+                                    ),
+                                    rate_limiter=getattr(
+                                        request.app.state, "rate_limiter", None
+                                    ),
+                                    agent_id=agent_id,
                                     interactive=True,
                                     confirm_callback=lambda _prompt: True,
                                 )
@@ -1930,6 +1953,16 @@ def create_agent_manager_router(
                                     engine=engine,
                                     model=model_name,
                                     tools=tools,
+                                    bus=getattr(request.app.state, "bus", None),
+                                    capability_policy=getattr(
+                                        request.app.state,
+                                        "capability_policy",
+                                        None,
+                                    ),
+                                    rate_limiter=getattr(
+                                        request.app.state, "rate_limiter", None
+                                    ),
+                                    agent_id=agent_id,
                                     interactive=True,
                                     confirm_callback=lambda _prompt: True,
                                 )

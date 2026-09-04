@@ -1424,6 +1424,7 @@ class CapabilitiesConfig:
 
     enabled: bool = False
     policy_path: str = ""
+    default_deny: bool = False
 
 
 @dataclass(slots=True)
@@ -1477,6 +1478,7 @@ _SECURITY_PROFILES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "rate_limit_enabled": True,
             "local_engine_bypass": False,
             "local_tool_bypass": False,
+            "capabilities": {"enabled": True, "default_deny": True},
         },
         "server": {
             "host": "127.0.0.1",
@@ -1490,6 +1492,7 @@ _SECURITY_PROFILES: Dict[str, Dict[str, Dict[str, Any]]] = {
             "rate_limit_burst": 5,
             "local_engine_bypass": False,
             "local_tool_bypass": False,
+            "capabilities": {"enabled": True, "default_deny": True},
         },
         "server": {
             "host": "0.0.0.0",
@@ -1523,6 +1526,18 @@ def apply_security_profile(
     pdef = _SECURITY_PROFILES[profile]
 
     for key, value in pdef.get("security", {}).items():
+        if key == "capabilities" and isinstance(value, dict):
+            # Preserve explicitly selected fields while inheriting the
+            # profile's remaining defaults. A policy_path alone must not
+            # silently disable the profile's capability gate.
+            if "capabilities" in _overrides:
+                continue
+            for cap_key, cap_value in value.items():
+                if f"capabilities.{cap_key}" not in _overrides and hasattr(
+                    security_cfg.capabilities, cap_key
+                ):
+                    setattr(security_cfg.capabilities, cap_key, cap_value)
+            continue
         if key not in _overrides and hasattr(security_cfg, key):
             setattr(security_cfg, key, value)
 
@@ -2110,7 +2125,13 @@ def load_config(path: Optional[Path] = None) -> JarvisConfig:
                 setattr(cfg, key, data[key])
 
         # Expand security profile (user TOML overrides take precedence)
-        _user_security_keys = set(data.get("security", {}).keys())
+        _security_data = data.get("security", {})
+        _user_security_keys = set(_security_data)
+        if isinstance(_security_data.get("capabilities"), dict):
+            _user_security_keys.discard("capabilities")
+            _user_security_keys.update(
+                f"capabilities.{key}" for key in _security_data["capabilities"]
+            )
         apply_security_profile(cfg.security, cfg.server, overrides=_user_security_keys)
 
         # Mining: dedicated parser for tagged-union submit_target
