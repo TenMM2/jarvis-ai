@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.tools.web_search import WebSearchTool
 
@@ -413,7 +415,7 @@ class TestUrlFetching:
         mock_resp.text = "<html><body><p>Hello world</p></body></html>"
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=mock_resp))
 
         content = WebSearchTool._fetch_url("https://example.com")
         assert "Hello world" in content
@@ -426,7 +428,7 @@ class TestUrlFetching:
         mock_resp.text = "<html><script>var x=1;</script><body>Content</body></html>"
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=mock_resp))
 
         content = WebSearchTool._fetch_url("https://example.com")
         assert "var x" not in content
@@ -440,7 +442,7 @@ class TestUrlFetching:
         mock_resp.text = "<p>" + "x" * 10000 + "</p>"
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=mock_resp))
 
         content = WebSearchTool._fetch_url("https://example.com", max_chars=100)
         assert len(content) < 200
@@ -454,11 +456,137 @@ class TestUrlFetching:
         mock_resp.text = "%PDF-1.4 binary data"
         mock_resp.headers = {"content-type": "application/pdf"}
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=mock_resp))
 
         content = WebSearchTool._fetch_url("https://example.com/file.pdf")
         assert "PDF" in content
         assert "cannot be read" in content
+
+
+class TestFetchRedirectSession:
+    @pytest.fixture(autouse=True)
+    def _guard(self, monkeypatch):
+        import openjarvis.tools.web_search as web_search
+
+        guard = MagicMock(return_value=None)
+        monkeypatch.setattr(web_search, "check_ssrf", guard)
+        return guard
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_redirect_keeps_cookie_and_closes_client(self, monkeypatch, status):
+        """Keep the actual client lifecycle so a fresh client per hop fails."""
+        import httpx
+
+        requests = []
+        closed = []
+        exit_transport = httpx.HTTPTransport.__exit__
+
+        def close_transport(transport, *args):
+            closed.append(transport)
+            return exit_transport(transport, *args)
+
+        def handler(transport, request):
+            requests.append(request)
+            if request.url.path == "/start":
+                return httpx.Response(
+                    status,
+                    headers={
+                        "location": "/article",
+                        "set-cookie": "session=redirect; Path=/; Secure",
+                    },
+                )
+            if request.headers.get("cookie") != "session=redirect":
+                return httpx.Response(403)
+            return httpx.Response(200, text="article with redirect cookie")
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handler)
+        monkeypatch.setattr(httpx.HTTPTransport, "__exit__", close_transport)
+
+        assert WebSearchTool._fetch_url("https://public.example/start") == (
+            "article with redirect cookie"
+        )
+        assert len(requests) == 2
+        assert closed
+
+    @pytest.mark.parametrize(
+        "destination",
+        ["https://other.example/article", "http://public.example/article"],
+    )
+    def test_cookie_is_scoped_to_host_and_fetch(self, monkeypatch, destination):
+        import httpx
+
+        requests = []
+
+        def handler(transport, request):
+            requests.append(request)
+            if request.url.path == "/start":
+                return httpx.Response(
+                    302,
+                    headers={
+                        "location": destination,
+                        "set-cookie": "session=private; Path=/; Secure",
+                    },
+                )
+            return httpx.Response(200, text="article")
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handler)
+
+        assert WebSearchTool._fetch_url("https://public.example/start") == "article"
+        assert WebSearchTool._fetch_url("https://public.example/article") == "article"
+        assert [request.headers.get("cookie") for request in requests] == [
+            None,
+            None,
+            None,
+        ]
+
+    def test_private_redirect_with_cookie_is_never_requested(self, monkeypatch, _guard):
+        import httpx
+
+        requests = []
+
+        def handler(transport, request):
+            requests.append(request)
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "http://127.0.0.1/admin",
+                    "set-cookie": "session=private; Path=/",
+                },
+            )
+
+        _guard.side_effect = [None, "private IP blocked"]
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handler)
+
+        with pytest.raises(ValueError, match="private IP blocked"):
+            WebSearchTool._fetch_url("https://public.example/start")
+        assert len(requests) == 1
+        assert [call.args[0] for call in _guard.call_args_list] == [
+            "https://public.example/start",
+            "http://127.0.0.1/admin",
+        ]
+
+    @pytest.mark.parametrize("redirects", [5, 6])
+    def test_redirect_limit(self, monkeypatch, _guard, redirects):
+        import httpx
+
+        requests = []
+
+        def handler(transport, request):
+            requests.append(request)
+            hop = int(request.url.path.removeprefix("/"))
+            if hop < redirects:
+                return httpx.Response(302, headers={"location": f"/{hop + 1}"})
+            return httpx.Response(200, text="article")
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handler)
+
+        if redirects == 5:
+            assert WebSearchTool._fetch_url("https://public.example/0") == "article"
+        else:
+            with pytest.raises(ValueError, match="maximum of 5 redirects"):
+                WebSearchTool._fetch_url("https://public.example/0")
+        assert len(requests) == 6
+        assert _guard.call_count == 6
 
 
 class TestExecuteWithUrl:
@@ -477,7 +605,7 @@ class TestExecuteWithUrl:
         mock_resp.text = "<html><body>Page content here</body></html>"
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=mock_resp))
 
         tool = WebSearchTool(api_key="test-key")
         result = tool.execute(query="https://example.com/article")
@@ -494,7 +622,7 @@ class TestExecuteWithUrl:
         mock_resp.text = "<html><body>Article text</body></html>"
         mock_resp.headers = {"content-type": "text/html"}
         mock_resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=mock_resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=mock_resp))
 
         tool = WebSearchTool(api_key="test-key")
         result = tool.execute(query="Summarize https://example.com/article please")
@@ -522,7 +650,7 @@ class TestExecuteWithUrl:
 
         self._mock_ssrf(monkeypatch)
         monkeypatch.setattr(
-            httpx,
+            httpx.Client,
             "get",
             MagicMock(side_effect=httpx.HTTPError("Connection failed")),
         )
@@ -531,6 +659,97 @@ class TestExecuteWithUrl:
         result = tool.execute(query="https://example.com/broken")
         assert result.success is False
         assert "Failed to fetch URL" in result.content
+
+    def test_url_redirect_to_private_ip_is_blocked(self, monkeypatch):
+        """Every URL redirect hop must be checked for SSRF."""
+        import httpx
+
+        import openjarvis.tools.web_search as _ws
+
+        requests = []
+
+        def handler(request):
+            requests.append(str(request.url))
+            if request.url.host == "public.example.com":
+                return httpx.Response(
+                    302,
+                    headers={"location": "http://127.0.0.1/admin"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                text="internal response",
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+
+        guard = MagicMock(
+            side_effect=[None, None, "URL resolves to private IP: 127.0.0.1"]
+        )
+        monkeypatch.setattr(
+            httpx.HTTPTransport,
+            "handle_request",
+            lambda self, request: handler(request),
+        )
+        monkeypatch.setattr(_ws, "check_ssrf", guard)
+        result = WebSearchTool(engine="youcom").execute(
+            query="https://public.example.com/start"
+        )
+
+        assert result.success is False
+        assert "127.0.0.1" in result.content
+        assert requests == ["https://public.example.com/start"]
+        assert [call.args[0] for call in guard.call_args_list] == [
+            "https://public.example.com/start",
+            "https://public.example.com/start",
+            "http://127.0.0.1/admin",
+        ]
+
+    def test_url_public_redirect_is_followed_after_ssrf_check(self, monkeypatch):
+        """Public relative redirects still work when checked hop by hop."""
+        import httpx
+
+        import openjarvis.tools.web_search as _ws
+
+        requests = []
+
+        def handler(request):
+            requests.append(str(request.url))
+            if request.url.path == "/start":
+                return httpx.Response(
+                    302,
+                    headers={"location": "/article"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                text="public article",
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+
+        guard = MagicMock(return_value=None)
+        monkeypatch.setattr(
+            httpx.HTTPTransport,
+            "handle_request",
+            lambda self, request: handler(request),
+        )
+        monkeypatch.setattr(_ws, "check_ssrf", guard)
+        result = WebSearchTool(engine="youcom").execute(
+            query="https://public.example.com/start"
+        )
+
+        assert result.success is True
+        assert result.content == "public article"
+        assert requests == [
+            "https://public.example.com/start",
+            "https://public.example.com/article",
+        ]
+        assert [call.args[0] for call in guard.call_args_list] == [
+            "https://public.example.com/start",
+            "https://public.example.com/start",
+            "https://public.example.com/article",
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +1060,7 @@ class TestYouComContentsExtraction:
         resp.text = "<html><body>Local text</body></html>"
         resp.headers = {"content-type": "text/html"}
         resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=resp))
         monkeypatch.setattr(
             httpx, "post", MagicMock(side_effect=AssertionError("must not be called"))
         )
@@ -863,7 +1082,7 @@ class TestYouComContentsExtraction:
         resp.text = "<html><body>Local text</body></html>"
         resp.headers = {"content-type": "text/html"}
         resp.raise_for_status = MagicMock()
-        monkeypatch.setattr(httpx, "get", MagicMock(return_value=resp))
+        monkeypatch.setattr(httpx.Client, "get", MagicMock(return_value=resp))
 
         result = WebSearchTool(engine="youcom").execute(query="https://example.com/a")
 

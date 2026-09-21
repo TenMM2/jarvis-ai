@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+from urllib.parse import urljoin
 
 from openjarvis import __version__
 from openjarvis.core.registry import ToolRegistry
@@ -43,6 +44,9 @@ ENGINES = ("auto", "youcom", "tavily", "duckduckgo")
 YOUCOM_USER_AGENT = (
     f"openjarvis/{__version__} youdotcom-integration/open-jarvis-openjarvis"
 )
+
+_MAX_FETCH_REDIRECTS = 5
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
 
 # Keyless tier exhaustion (402) and per-IP throttling (429) both mean "get a
 # key", which is a different remedy from a generic HTTP failure.
@@ -173,24 +177,39 @@ class WebSearchTool(BaseTool):
 
     @staticmethod
     def _fetch_url(url: str, max_chars: int = 6000) -> str:
-        """Fetch a URL and return extracted text content."""
+        """Fetch a URL and return extracted text after checking each redirect."""
         import re as _re
 
         import httpx
 
         url = WebSearchTool._normalize_url(url)
-        ssrf_error = check_ssrf(url)
-        if ssrf_error:
-            raise ValueError(ssrf_error)
-        resp = httpx.get(
-            url.strip(),
-            follow_redirects=True,
+        current_url = url.strip()
+        # One client preserves cookie scope across redirect hops. Its lifetime
+        # is limited to this fetch so unrelated requests do not share cookies.
+        with httpx.Client(
+            follow_redirects=False,
             timeout=30.0,
             headers={
                 "User-Agent": "Mozilla/5.0 (compatible; OpenJarvis/1.0; +https://github.com/openjarvis)"
             },
-        )
-        resp.raise_for_status()
+        ) as client:
+            for _ in range(_MAX_FETCH_REDIRECTS + 1):
+                ssrf_error = check_ssrf(current_url)
+                if ssrf_error:
+                    raise ValueError(ssrf_error)
+                resp = client.get(current_url)
+                if resp.status_code not in _REDIRECT_STATUS_CODES:
+                    resp.raise_for_status()
+                    break
+                location = resp.headers.get("location", "")
+                if not location:
+                    resp.raise_for_status()
+                    break
+                current_url = urljoin(str(resp.url), location)
+            else:
+                raise ValueError(
+                    f"URL exceeded the maximum of {_MAX_FETCH_REDIRECTS} redirects"
+                )
         content_type = resp.headers.get("content-type", "")
         if "application/pdf" in content_type:
             return (
