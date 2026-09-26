@@ -285,8 +285,9 @@ jobs:
         run: |
           cd frontend/src-tauri/scripts && chmod +x download-ollama.sh
           if [[ "${{ matrix.platform }}" == "macos-14" ]]; then
-            ./download-ollama.sh aarch64-apple-darwin
-            ./download-ollama.sh x86_64-apple-darwin
+            # Tauri's universal target requires this exact sidecar suffix.
+            # Ollama's darwin archive already contains an arm64+x86_64 binary.
+            ./download-ollama.sh universal-apple-darwin
           else
             ./download-ollama.sh
           fi
@@ -339,11 +340,29 @@ jobs:
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          # Tauri's build script requires strict SemVer (MAJOR.MINOR.PATCH[-pre][+build]).
-          # PEP 440 dev releases (`1.0.2.dev661`) are NOT valid SemVer, so we
-          # translate `.devN` to the SemVer-equivalent `-dev.N` prerelease form.
-          # PyPI keeps the PEP 440 form; only the Tauri bundle uses SemVer.
-          TAURI_VERSION="${VERSION/.dev/-dev.}"
+          # Tauri requires SemVer; MSI also requires a single numeric prerelease
+          # identifier no greater than 65535. Keep the PEP 440 tag for PyPI,
+          # but bundle 1.0.5.dev1182 as 1.0.5-1182 on every desktop platform.
+          if [[ "$VERSION" == *.dev* ]]; then
+            if [[ ! "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
+              echo "::error::Unsupported desktop dev version: $VERSION"
+              exit 1
+            fi
+            BASE_VERSION="${BASH_REMATCH[1]}"
+            DEV_NUMBER="${BASH_REMATCH[2]}"
+            if (( ${#DEV_NUMBER} > 5 )); then
+              echo "::error::Desktop dev number exceeds MSI's 65535 limit: $DEV_NUMBER"
+              exit 1
+            fi
+            DEV_NUMBER=$((10#$DEV_NUMBER))
+            if (( DEV_NUMBER > 65535 )); then
+              echo "::error::Desktop dev number exceeds MSI's 65535 limit: $DEV_NUMBER"
+              exit 1
+            fi
+            TAURI_VERSION="${BASE_VERSION}-${DEV_NUMBER}"
+          else
+            TAURI_VERSION="$VERSION"
+          fi
           echo "tauri_version=${TAURI_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Write Tauri release config
