@@ -285,9 +285,22 @@ jobs:
         run: |
           cd frontend/src-tauri/scripts && chmod +x download-ollama.sh
           if [[ "${{ matrix.platform }}" == "macos-14" ]]; then
-            # Tauri's universal target requires this exact sidecar suffix.
-            # Ollama's darwin archive already contains an arm64+x86_64 binary.
+            # Tauri builds each architecture first, then bundles the universal
+            # app. Ollama's darwin archive already contains both slices, so
+            # download it once and supply all three names Tauri looks for.
             ./download-ollama.sh universal-apple-darwin
+            BINARIES_DIR="../binaries"
+            UNIVERSAL="$BINARIES_DIR/ollama-universal-apple-darwin"
+            for arch in aarch64 x86_64; do
+              cp "$UNIVERSAL" "$BINARIES_DIR/ollama-${arch}-apple-darwin"
+            done
+            for target in universal-apple-darwin aarch64-apple-darwin x86_64-apple-darwin; do
+              binary="$BINARIES_DIR/ollama-$target"
+              if [[ ! -s "$binary" || ! -x "$binary" ]] || ! lipo "$binary" -verify_arch arm64 x86_64; then
+                echo "::error::Missing or invalid macOS Ollama sidecar: $binary"
+                exit 1
+              fi
+            done
           else
             ./download-ollama.sh
           fi
