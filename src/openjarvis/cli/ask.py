@@ -787,6 +787,15 @@ def _print_profile(
         "(overrides config). Pass 'none' to disable all persona files."
     ),
 )
+@click.option(
+    "--route",
+    "--router-policy",
+    "router_policy",
+    default=None,
+    help=(
+        "Routing policy to select model (e.g. heuristic, learned). Overrides config."
+    ),
+)
 @click.pass_context
 def ask(
     ctx: click.Context,
@@ -806,6 +815,7 @@ def ask(
     persona_name: str | None,
     image_paths: tuple[str, ...] = (),
     capture_screen: bool = False,
+    router_policy: str | None = None,
 ) -> None:
     """Ask Jarvis a question."""
     quiet = (ctx.obj or {}).get("quiet", False) or output_json
@@ -976,9 +986,77 @@ def ask(
     for ek, model_ids in all_models.items():
         merge_discovered_models(ek, model_ids)
 
-    # Resolve model via config fallback chain
+    # Resolve model via learning router policy or config fallback chain
     if model_name is None:
-        model_name = config.intelligence.default_model
+        effective_router_policy = router_policy
+        if not effective_router_policy and getattr(config.learning, "enabled", False):
+            effective_router_policy = getattr(config.learning.routing, "policy", "")
+
+        if effective_router_policy:
+            try:
+                from openjarvis.core.registry import RouterPolicyRegistry
+                from openjarvis.learning import ensure_registered
+                from openjarvis.learning.routing.router import build_routing_context
+
+                ensure_registered()
+                configured_default = config.intelligence.default_model
+                configured_fallback = config.intelligence.fallback_model
+                engine_models = all_models.get(engine_name, [])
+                available_models = set(engine_models)
+                # A configured fallback may belong to another engine.
+                candidates = list(
+                    dict.fromkeys(
+                        [
+                            m
+                            for m in [
+                                configured_default,
+                                *engine_models,
+                                configured_fallback,
+                            ]
+                            if m and m in available_models
+                        ]
+                    )
+                )
+                if candidates and RouterPolicyRegistry.contains(
+                    effective_router_policy
+                ):
+                    preferred_model = (
+                        configured_default
+                        if configured_default in available_models
+                        else candidates[0]
+                    )
+                    fallback_model = (
+                        configured_fallback
+                        if configured_fallback in available_models
+                        else candidates[0]
+                    )
+                    policy = RouterPolicyRegistry.create(
+                        effective_router_policy,
+                        available_models=candidates,
+                        default_model=preferred_model,
+                        fallback_model=fallback_model,
+                    )
+                    routing_context = build_routing_context(
+                        query_text,
+                        model=preferred_model,
+                    )
+                    selected = policy.select_model(routing_context)
+                    if selected in candidates:
+                        logger.info(
+                            "Router (%s) selected model %s for query",
+                            effective_router_policy,
+                            selected,
+                        )
+                        model_name = selected
+            except Exception as exc:
+                logger.debug(
+                    "Failed to route model via %s: %s",
+                    effective_router_policy,
+                    exc,
+                )
+
+        if model_name is None:
+            model_name = config.intelligence.default_model
     if not model_name:
         # Try first available from engine
         engine_models = all_models.get(engine_name, [])
