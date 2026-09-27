@@ -28,6 +28,14 @@ def test_desktop_csp_allows_remote_api_servers() -> None:
     assert {"http:", "https:", "ws:", "wss:"} <= connect_sources
 
 
+def test_desktop_csp_allows_local_synthesized_audio() -> None:
+    """Read-aloud plays a blob URL inside the Tauri webview (#1038)."""
+    media_sources = _csp_sources("media-src")
+
+    assert {"'self'", "blob:"} <= media_sources
+    assert media_sources.isdisjoint({"http:", "https:", "*"})
+
+
 def test_macos_webview_allows_user_configured_http_servers() -> None:
     """CSP alone cannot override App Transport Security for public hosts."""
     info = plistlib.loads(MACOS_INFO_PLIST.read_bytes())
