@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ _LOG_FILE = DEFAULT_CONFIG_DIR / "server.log"
 # and `restart` fall back to the config defaults and misreport (or silently
 # move) the port whenever `start` was given an explicit --host/--port.
 _STATE_FILE = DEFAULT_CONFIG_DIR / "server.json"
+_LAUNCH_TOKEN_ENV = "OPENJARVIS_DAEMON_LAUNCH_TOKEN"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -74,40 +76,74 @@ def _clear_state_unlocked(pid: int) -> None:
         _STATE_FILE.unlink(missing_ok=True)
 
 
+def _read_pid_unlocked() -> int | None:
+    """Read and clean up daemon state while the state lock is held."""
+    pid = _read_pid_file()
+    if pid is None:
+        _PID_FILE.unlink(missing_ok=True)
+        return None
+    if not _pid_alive(pid):
+        _clear_state_unlocked(pid)
+        return None
+    return pid
+
+
 def _read_pid() -> int | None:
     """Read PID from pid file, return None if not found or stale."""
     with _state_lock():
-        pid = _read_pid_file()
-        if pid is None:
-            _PID_FILE.unlink(missing_ok=True)
-            return None
-        if not _pid_alive(pid):
-            _clear_state_unlocked(pid)
-            return None
-        return pid
+        return _read_pid_unlocked()
 
 
 def _write_pid(
-    pid: int, host: str = "", port: int | None = None, *, ready: bool = True
+    pid: int,
+    host: str = "",
+    port: int | None = None,
+    *,
+    ready: bool = True,
+    launch_token: str | None = None,
 ) -> None:
     """Write PID, plus the address the daemon actually bound to."""
     with _state_lock():
-        existing = _read_pid_file()
-        if existing is not None and existing != pid and _pid_alive(existing):
+        _write_pid_unlocked(pid, host, port, ready=ready, launch_token=launch_token)
+
+
+def _write_pid_unlocked(
+    pid: int,
+    host: str = "",
+    port: int | None = None,
+    *,
+    ready: bool = True,
+    launch_token: str | None = None,
+) -> None:
+    """Update the state while holding the lock, allowing one launch to promote."""
+    existing = _read_pid_file()
+    current = _read_state()
+    same_launch = (
+        launch_token is not None
+        and current.get("launch_token") == launch_token
+        and current.get("pid") == existing
+    )
+    if (
+        not ready
+        and current.get("ready", True)
+        and (current.get("pid") == pid or same_launch)
+    ):
+        # The server may have bound before its launcher recorded pending state.
+        # Keep the actual PID and bound address in either ordering.
+        return
+    if existing is not None and existing != pid and _pid_alive(existing):
+        if not (ready and same_launch and current.get("ready") is False):
             raise RuntimeError(f"Another server is already registered (PID {existing})")
-        current = _read_state()
-        if not ready and current.get("pid") == pid and current.get("ready", True):
-            # The child may have finished binding before its parent records
-            # the spawn. Never replace that actual address with a request.
-            return
-        secure_write_text(_PID_FILE, str(pid))
-        if host or port is not None:
-            state = {"pid": pid, "host": host, "port": port}
-            if not ready:
-                state["ready"] = False
-            secure_write_json(_STATE_FILE, state)
-        else:
-            _STATE_FILE.unlink(missing_ok=True)
+    secure_write_text(_PID_FILE, str(pid))
+    if host or port is not None:
+        state = {"pid": pid, "host": host, "port": port}
+        if not ready:
+            state["ready"] = False
+        if launch_token is not None:
+            state["launch_token"] = launch_token
+        secure_write_json(_STATE_FILE, state)
+    else:
+        _STATE_FILE.unlink(missing_ok=True)
 
 
 def _read_state() -> dict:
@@ -126,6 +162,12 @@ def _read_state() -> dict:
         or type(state.get("port")) is not int
         or not 0 <= state["port"] <= 65535
         or type(state.get("ready", True)) is not bool
+        or (
+            "launch_token" in state
+            and (
+                not isinstance(state["launch_token"], str) or not state["launch_token"]
+            )
+        )
     ):
         return {}
     return state
@@ -154,7 +196,7 @@ def record_server_state(pid: int, host: str, port: int) -> None:
     Called by `jarvis serve` itself, so a server supervised by launchd/systemd
     (which never goes through `jarvis start`) is still reported as running.
     """
-    _write_pid(pid, host, port)
+    _write_pid(pid, host, port, launch_token=os.environ.get(_LAUNCH_TOKEN_ENV))
 
 
 def clear_server_state(pid: int) -> None:
@@ -216,7 +258,6 @@ def start(
     # daemon. DETACHED_PROCESS gives it no console at all; the new process
     # group additionally stops a Ctrl-C in the parent reaching it.
     DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    log_fh = open(_LOG_FILE, "a")  # noqa: SIM115
     spawn_kwargs: dict = {}
     if sys.platform == "win32":
         spawn_kwargs["creationflags"] = (
@@ -224,20 +265,45 @@ def start(
         )
     else:
         spawn_kwargs["start_new_session"] = True
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log_fh,
-        stderr=log_fh,
-        **spawn_kwargs,
-    )
-    try:
-        _write_pid(proc.pid, bind_host, bind_port, ready=False)
-    except RuntimeError as exc:
+    launch_token = secrets.token_hex(16)
+    proc = None
+    registration_error = None
+    # Serialize the final check, spawn, and pending registration. The server
+    # waits on this same lock if it binds before its launcher finishes writing.
+    with _state_lock():
+        existing = _read_pid_unlocked()
+        if existing is None:
+            with open(_LOG_FILE, "a") as log_fh:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_fh,
+                    stderr=log_fh,
+                    env={**os.environ, _LAUNCH_TOKEN_ENV: launch_token},
+                    **spawn_kwargs,
+                )
+            try:
+                _write_pid_unlocked(
+                    proc.pid,
+                    bind_host,
+                    bind_port,
+                    ready=False,
+                    launch_token=launch_token,
+                )
+            except (OSError, RuntimeError) as exc:
+                registration_error = exc
+
+    if existing is not None:
+        console.print(f"[yellow]Server already running (PID {existing}).[/yellow]")
+        console.print("Use 'jarvis stop' to stop it first, or 'jarvis restart'.")
+        sys.exit(1)
+    assert proc is not None
+    if registration_error is not None:
         terminate_process(proc.pid, grace_seconds=10.0)
-        raise click.ClickException(str(exc)) from exc
+        clear_server_state(proc.pid)
+        raise click.ClickException(str(registration_error)) from registration_error
 
     console.print(
-        f"[green]OpenJarvis server starting[/green] (PID {proc.pid})\n"
+        f"[green]OpenJarvis server starting[/green] (launch PID {proc.pid})\n"
         f"  Requested URL: {_server_url(bind_host, bind_port)}\n"
         f"  Log: {_LOG_FILE}"
     )

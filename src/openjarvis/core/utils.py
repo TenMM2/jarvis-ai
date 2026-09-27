@@ -146,16 +146,20 @@ def terminate_process(pid: int | None, *, grace_seconds: float = 3.0) -> None:
     """Terminate *pid* gracefully, escalating to a forced kill (cross-platform).
 
     POSIX sends ``SIGTERM`` then, after *grace_seconds*, ``SIGKILL``. Windows
-    has neither; it uses ``taskkill`` (graceful) then ``taskkill /F /T`` (force,
-    whole tree). ``signal.SIGKILL`` does not exist on Windows, so it is only
-    referenced inside the POSIX branch.
+    has neither; it uses ``taskkill /T`` (graceful, whole tree) then
+    ``taskkill /F /T`` (force). ``signal.SIGKILL`` does not exist on Windows,
+    so it is only referenced inside the POSIX branch.
     """
     if not process_alive(pid):
         return
     is_windows = platform.system() == "Windows"
 
     if is_windows:
-        subprocess.run(["taskkill", "/PID", str(pid)], capture_output=True, check=False)
+        subprocess.run(
+            ["taskkill", "/T", "/PID", str(pid)],
+            capture_output=True,
+            check=False,
+        )
     else:
         try:
             os.kill(pid, signal.SIGTERM)

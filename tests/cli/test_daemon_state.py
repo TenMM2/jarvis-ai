@@ -120,6 +120,86 @@ def test_parent_cannot_replace_child_bound_port_with_requested_zero(state_dir):
     assert daemon_cmd._read_state().get("ready", True)
 
 
+def test_direct_python_promotes_pending_pid(state_dir, monkeypatch):
+    """A direct Python executable has no child process to discover."""
+    monkeypatch.setenv(daemon_cmd._LAUNCH_TOKEN_ENV, "launch-a")
+    daemon_cmd._write_pid(4321, "127.0.0.1", 0, ready=False, launch_token="launch-a")
+
+    daemon_cmd.record_server_state(4321, "127.0.0.1", 8899)
+
+    assert daemon_cmd._read_pid_file() == 4321
+    assert daemon_cmd._read_state() == {
+        "pid": 4321,
+        "host": "127.0.0.1",
+        "port": 8899,
+        "launch_token": "launch-a",
+    }
+
+
+def test_launcher_child_promotes_pending_pid_even_after_delay(state_dir, monkeypatch):
+    """The child can register whenever it binds; no discovery deadline applies."""
+    monkeypatch.setenv(daemon_cmd._LAUNCH_TOKEN_ENV, "launch-a")
+    monkeypatch.setattr(daemon_cmd, "_pid_alive", lambda pid: True)
+    daemon_cmd._write_pid(4321, "127.0.0.1", 0, ready=False, launch_token="launch-a")
+
+    daemon_cmd.record_server_state(9876, "127.0.0.1", 8899)
+
+    assert daemon_cmd._read_pid_file() == 9876
+    assert daemon_cmd._read_state() == {
+        "pid": 9876,
+        "host": "127.0.0.1",
+        "port": 8899,
+        "launch_token": "launch-a",
+    }
+
+
+def test_child_ready_before_launcher_pending_write(state_dir, monkeypatch):
+    """The parent cannot overwrite the child's real PID or bound port."""
+    monkeypatch.setenv(daemon_cmd._LAUNCH_TOKEN_ENV, "launch-a")
+    monkeypatch.setattr(daemon_cmd, "_pid_alive", lambda pid: True)
+    daemon_cmd.record_server_state(9876, "127.0.0.1", 8899)
+
+    daemon_cmd._write_pid(4321, "127.0.0.1", 0, ready=False, launch_token="launch-a")
+
+    assert daemon_cmd._read_pid_file() == 9876
+    assert daemon_cmd._read_state()["port"] == 8899
+    assert daemon_cmd._read_state().get("ready", True)
+
+
+def test_other_launch_cannot_claim_live_pending_pid(state_dir, monkeypatch):
+    monkeypatch.setattr(daemon_cmd, "_pid_alive", lambda pid: True)
+    daemon_cmd._write_pid(4321, "127.0.0.1", 0, ready=False, launch_token="launch-a")
+
+    with pytest.raises(RuntimeError, match="Another server is already registered"):
+        daemon_cmd._write_pid(9876, "127.0.0.1", 8899, launch_token="launch-b")
+
+    assert daemon_cmd._read_pid_file() == 4321
+    assert daemon_cmd._read_state()["ready"] is False
+
+
+def test_same_launch_cannot_replace_ready_server(state_dir, monkeypatch):
+    monkeypatch.setattr(daemon_cmd, "_pid_alive", lambda pid: True)
+    daemon_cmd._write_pid(4321, "127.0.0.1", 8899, launch_token="launch-a")
+
+    with pytest.raises(RuntimeError, match="Another server is already registered"):
+        daemon_cmd._write_pid(9876, "127.0.0.1", 8899, launch_token="launch-a")
+
+    assert daemon_cmd._read_pid_file() == 4321
+
+
+def test_other_launcher_cannot_replace_ready_server(state_dir, monkeypatch):
+    monkeypatch.setattr(daemon_cmd, "_pid_alive", lambda pid: True)
+    daemon_cmd._write_pid(9876, "127.0.0.1", 8899, launch_token="launch-a")
+
+    with pytest.raises(RuntimeError, match="Another server is already registered"):
+        daemon_cmd._write_pid(
+            4321, "127.0.0.1", 0, ready=False, launch_token="launch-b"
+        )
+
+    assert daemon_cmd._read_pid_file() == 9876
+    assert daemon_cmd._read_state()["port"] == 8899
+
+
 def test_pending_start_does_not_claim_an_address_is_listening(state_dir, monkeypatch):
     daemon_cmd._write_pid(999, "127.0.0.1", 0, ready=False)
     monkeypatch.setattr(daemon_cmd, "_pid_alive", lambda pid: True)

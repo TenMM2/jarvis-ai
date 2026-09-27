@@ -142,6 +142,7 @@ class TestTerminateProcess:
     def test_terminate_none_no_crash(self) -> None:
         terminate_process(None)
 
+    @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX-only")
     def test_posix_escalates_to_sigkill(self) -> None:
         with (
             patch("openjarvis.core.utils.platform.system", return_value="Linux"),
@@ -162,7 +163,7 @@ class TestTerminateProcess:
         ):
             terminate_process(1234, grace_seconds=1)
         run.assert_called_once_with(
-            ["taskkill", "/PID", "1234"], capture_output=True, check=False
+            ["taskkill", "/T", "/PID", "1234"], capture_output=True, check=False
         )
 
     def test_windows_escalates_to_forced_tree_kill(self) -> None:
@@ -174,7 +175,7 @@ class TestTerminateProcess:
             terminate_process(1234, grace_seconds=0)
         assert run.call_args_list == [
             call(
-                ["taskkill", "/PID", "1234"],
+                ["taskkill", "/T", "/PID", "1234"],
                 capture_output=True,
                 check=False,
             ),
