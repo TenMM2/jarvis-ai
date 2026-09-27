@@ -135,6 +135,7 @@ class TestCloudEngineEmptyChoices:
         [
             ("gpt-4o", "_openai_client", "OpenAI"),
             ("openrouter/test-model", "_openrouter_client", "OpenRouter"),
+            ("atlascloud/openai/gpt-4.1-mini", "_atlascloud_client", "Atlas Cloud"),
             ("MiniMax-M3", "_minimax_client", "MiniMax"),
             ("deepseek-v4-flash", "_deepseek_client", "DeepSeek"),
         ],
@@ -146,16 +147,7 @@ class TestCloudEngineEmptyChoices:
         client_attr: str,
         provider: str,
     ) -> None:
-        for env_var in (
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "GOOGLE_API_KEY",
-            "OPENROUTER_API_KEY",
-            "MINIMAX_API_KEY",
-            "DEEPSEEK_API_KEY",
-            "OPENAI_CODEX_API_KEY",
-            "OPENAI_CODEX_BASE_URL",
-        ):
+        for env_var in (*CLOUD_KEY_ENV_VARS, "OPENAI_CODEX_BASE_URL"):
             monkeypatch.delenv(env_var, raising=False)
 
         fake_resp = SimpleNamespace(

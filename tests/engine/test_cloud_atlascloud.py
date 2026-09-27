@@ -32,17 +32,9 @@ from openjarvis.engine.cloud import (
 )
 from openjarvis.intelligence.model_catalog import BUILTIN_MODELS
 from openjarvis.server import cloud_router
+from tests.engine.conftest import CLOUD_KEY_ENV_VARS
 
-_ALL_CLOUD_KEYS = (
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "OPENROUTER_API_KEY",
-    "MINIMAX_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "ATLASCLOUD_API_KEY",
-)
+_ALL_CLOUD_KEYS = CLOUD_KEY_ENV_VARS
 
 _DEFAULT_MODEL = "atlascloud/openai/gpt-4.1-mini"
 
@@ -208,6 +200,29 @@ class TestAtlasCloudGenerate:
         assert result["usage"]["prompt_tokens"] == 10
         assert result["usage"]["completion_tokens"] == 5
         assert result["finish_reason"] == "stop"
+
+    def test_generate_empty_choices_surfaces_provider_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = _make_cloud_engine(monkeypatch)
+        client = mock.MagicMock()
+        fake_resp = SimpleNamespace(
+            choices=None,
+            error={"message": "Upstream error: Service temporarily overloaded"},
+            usage=None,
+            model="openai/gpt-4.1-mini",
+        )
+        client.chat.completions.create.return_value = fake_resp
+        engine._atlascloud_client = client
+
+        with pytest.raises(EngineConnectionError) as exc_info:
+            engine.generate(
+                [Message(role=Role.USER, content="Hi")],
+                model=_DEFAULT_MODEL,
+            )
+
+        assert "Atlas Cloud" in str(exc_info.value)
+        assert "Service temporarily overloaded" in str(exc_info.value)
 
     def test_generate_retries_without_unsupported_temperature(
         self, monkeypatch: pytest.MonkeyPatch

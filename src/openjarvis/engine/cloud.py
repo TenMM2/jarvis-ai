@@ -1119,7 +1119,9 @@ class CloudEngine(InferenceEngine):
             self._atlascloud_client, create_kwargs
         )
         elapsed = time.monotonic() - t0
-        choice = resp.choices[0]
+        choice = _first_choice_or_raise(
+            resp, provider="Atlas Cloud", model=actual_model
+        )
         usage = resp.usage
         prompt_tokens = usage.prompt_tokens if usage else 0
         completion_tokens = usage.completion_tokens if usage else 0
