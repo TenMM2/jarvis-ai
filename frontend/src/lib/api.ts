@@ -1095,8 +1095,16 @@ async function memoryErrorDetail(res: Response, fallback: string): Promise<strin
 }
 
 export async function getMemoryStats(): Promise<MemoryStats> {
-  const res = await apiFetch(`/v1/memory/stats`);
-  if (!res.ok) throw new Error('Failed to fetch memory stats');
+  let res: Response;
+  try {
+    res = await apiFetch(`/v1/memory/stats`);
+  } catch {
+    throw new Error('Could not reach the OpenJarvis API. Check the server status and API URL, then retry.');
+  }
+  if (!res.ok) {
+    const detail = await memoryErrorDetail(res, 'Memory status request failed');
+    throw new Error(`${detail} (HTTP ${res.status})`);
+  }
   return res.json();
 }
 

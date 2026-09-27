@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Palette,
   Globe,
@@ -33,6 +33,7 @@ import {
   deleteToolCredential,
   isTauri,
   type InferenceSource,
+  type MemoryStats,
 } from '../lib/api';
 import { isAutoUpdateDisabled, setAutoUpdateDisabled } from '../components/Desktop/UpdateChecker';
 
@@ -217,14 +218,64 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function SettingRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between py-3" style={{ borderBottom: '1px solid var(--color-border-subtle)' }}>
-      <div>
+      <div className="min-w-0">
         <div className="text-sm" style={{ color: 'var(--color-text)' }}>{label}</div>
         {description && (
-          <div className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>{description}</div>
+          <div className="text-xs mt-0.5 break-words" style={{ color: 'var(--color-text-tertiary)' }}>{description}</div>
         )}
       </div>
       <div>{children}</div>
     </div>
+  );
+}
+
+type MemoryStatus =
+  | { kind: 'loading' }
+  | { kind: 'ready'; stats: MemoryStats }
+  | { kind: 'error'; message: string };
+
+export function MemoryStatusRow({
+  status,
+  onRetry,
+}: {
+  status: MemoryStatus;
+  onRetry: () => void;
+}) {
+  const stats = status.kind === 'ready' ? status.stats : null;
+  const description = status.kind === 'error'
+    ? status.message
+    : status.kind === 'loading'
+      ? 'Checking memory backend...'
+      : stats?.backend === 'none'
+        ? 'Memory is not configured'
+        : `${stats?.backend} backend — ${stats?.entries} entries`;
+  const label = status.kind === 'loading'
+    ? 'Checking...'
+    : stats?.backend === 'none'
+      ? 'Not configured'
+      : stats
+        ? `${stats.entries} entries`
+        : 'Unavailable';
+
+  return (
+    <SettingRow label="Memory status" description={description}>
+      <div className="flex items-center gap-2">
+        <Brain size={14} style={{ color: stats && stats.backend !== 'none' ? 'var(--color-accent)' : 'var(--color-text-tertiary)' }} />
+        <span className="text-xs whitespace-nowrap" style={{ color: 'var(--color-text-secondary)' }}>
+          {label}
+        </span>
+        {status.kind === 'error' && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="text-xs underline cursor-pointer whitespace-nowrap"
+            style={{ color: 'var(--color-accent)' }}
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    </SettingRow>
   );
 }
 
@@ -265,7 +316,8 @@ export function SettingsPage() {
     }
   }, []);
 
-  const [memoryStats, setMemoryStats] = useState<{ entries: number; backend: string } | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus>({ kind: 'loading' });
+  const memoryRequestId = useRef(0);
   const [memoryEnabled, setMemoryEnabled] = useState(() => {
     try { return localStorage.getItem('openjarvis-memory-enabled') !== 'false'; } catch { return true; }
   });
@@ -311,6 +363,34 @@ export function SettingsPage() {
     }
   }, [srcKind, customHost, customModel, customEngine, customKey]);
 
+  const refreshMemoryStatus = useCallback(async () => {
+    const requestId = ++memoryRequestId.current;
+    setMemoryStatus({ kind: 'loading' });
+    try {
+      const stats = await getMemoryStats();
+      if (requestId === memoryRequestId.current) {
+        setMemoryStatus({ kind: 'ready', stats });
+      }
+    } catch (error) {
+      if (requestId === memoryRequestId.current) {
+        setMemoryStatus({
+          kind: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMemoryStatus();
+    const onFocus = () => { void refreshMemoryStatus(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      ++memoryRequestId.current;
+    };
+  }, [refreshMemoryStatus, settings.apiUrl]);
+
   useEffect(() => {
     checkHealth().then(setHealthy);
     fetchSpeechHealth()
@@ -319,9 +399,6 @@ export function SettingsPage() {
     fetchTtsHealth()
       .then((h) => setTtsBackend(h))
       .catch(() => setTtsBackend({ available: false }));
-    getMemoryStats()
-      .then(setMemoryStats)
-      .catch(() => setMemoryStats(null));
   }, []);
 
   const showSaved = () => {
@@ -584,14 +661,7 @@ export function SettingsPage() {
 
           {/* Memory */}
           <Section title="Memory">
-            <SettingRow label="Memory status" description={memoryStats ? `${memoryStats.backend} backend — ${memoryStats.entries} entries` : 'Unable to reach memory service'}>
-              <div className="flex items-center gap-2">
-                <Brain size={14} style={{ color: memoryStats ? 'var(--color-accent)' : 'var(--color-text-tertiary)' }} />
-                <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
-                  {memoryStats ? `${memoryStats.entries} entries` : 'Unavailable'}
-                </span>
-              </div>
-            </SettingRow>
+            <MemoryStatusRow status={memoryStatus} onRetry={() => { void refreshMemoryStatus(); }} />
             <SettingRow label="Use memory context" description="Automatically inject relevant memories into conversations">
               <button
                 onClick={() => {
