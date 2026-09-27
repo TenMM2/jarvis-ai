@@ -1940,7 +1940,10 @@ function MemorySection() {
   const loadStats = useCallback(() => {
     getMemoryStats()
       .then((s) => { setStats(s); setStatsError(''); })
-      .catch(() => setStatsError('Could not reach memory backend'));
+      .catch((error: unknown) => {
+        setStats(null);
+        setStatsError(error instanceof Error && error.message ? error.message : 'Could not reach memory backend');
+      });
   }, []);
 
   useEffect(() => {
@@ -2042,10 +2045,21 @@ function MemorySection() {
             }}>
               <Brain size={18} style={{ color: 'var(--color-accent-purple)' }} />
             </div>
-            <div>
+            <div className="min-w-0">
               <h3 className="text-sm font-semibold" style={{ color: 'var(--color-text)' }}>Memory Backend</h3>
               {statsError ? (
-                <p className="text-xs mt-0.5" style={{ color: 'var(--color-text-tertiary)' }}>{statsError}</p>
+                <div className="mt-0.5">
+                  <p role="alert" className="text-xs break-words" style={{ color: 'var(--color-error)' }}>{statsError}</p>
+                  <button
+                    type="button"
+                    onClick={loadStats}
+                    aria-label="Retry memory backend status"
+                    className="text-xs underline cursor-pointer mt-1"
+                    style={{ color: 'var(--color-accent)' }}
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : stats ? (
                 <div className="flex items-center gap-2 mt-0.5">
                   <span className="w-1.5 h-1.5 rounded-full" style={{
