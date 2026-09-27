@@ -209,6 +209,37 @@ class TestAtlasCloudGenerate:
         assert result["usage"]["completion_tokens"] == 5
         assert result["finish_reason"] == "stop"
 
+    def test_generate_retries_without_unsupported_temperature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = _make_cloud_engine(monkeypatch)
+        client = mock.MagicMock()
+        calls: list[dict] = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            if "temperature" in kwargs:
+                raise Exception(
+                    "Error code: 400 - Unsupported value: 'temperature' "
+                    "does not support 0.7"
+                )
+            return _fake_response(model="openai/gpt-5.4-mini")
+
+        client.chat.completions.create.side_effect = create
+        engine._atlascloud_client = client
+
+        result = engine.generate(
+            [Message(role=Role.USER, content="Hi")],
+            model="atlascloud/openai/gpt-5.4-mini",
+            temperature=0.7,
+        )
+
+        assert result["content"] == "Hello from Atlas Cloud!"
+        assert len(calls) == 2
+        assert calls[0]["model"] == calls[1]["model"] == "openai/gpt-5.4-mini"
+        assert "temperature" in calls[0]
+        assert "temperature" not in calls[1]
+
     @pytest.mark.parametrize("model", _ATLASCLOUD_POPULAR)
     def test_every_listed_model_routes_to_the_atlas_client(
         self, monkeypatch: pytest.MonkeyPatch, model: str
@@ -325,6 +356,46 @@ class TestAtlasCloudStream:
         sent = client.chat.completions.create.call_args.kwargs
         assert sent["model"] == "openai/gpt-4.1-mini"
         assert sent["stream"] is True
+
+    @pytest.mark.asyncio
+    async def test_stream_retries_without_unsupported_temperature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        engine = _make_cloud_engine(monkeypatch)
+        client = mock.MagicMock()
+        calls: list[dict] = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            if "temperature" in kwargs:
+                raise Exception(
+                    "Error code: 400 - Unsupported value: 'temperature' "
+                    "does not support 0.7"
+                )
+            return [
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="ok"))]
+                )
+            ]
+
+        client.chat.completions.create.side_effect = create
+        engine._atlascloud_client = client
+
+        tokens = [
+            token
+            async for token in engine.stream(
+                [Message(role=Role.USER, content="Hi")],
+                model="atlascloud/openai/gpt-5.4-mini",
+                temperature=0.7,
+            )
+        ]
+
+        assert tokens == ["ok"]
+        assert len(calls) == 2
+        assert calls[0]["model"] == calls[1]["model"] == "openai/gpt-5.4-mini"
+        assert calls[0]["stream"] is calls[1]["stream"] is True
+        assert "temperature" in calls[0]
+        assert "temperature" not in calls[1]
 
     @pytest.mark.asyncio
     async def test_stream_without_a_client_raises(

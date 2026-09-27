@@ -202,6 +202,18 @@ class TestOpenAIUnsupportedTemperatureRetry:
             model="gpt-5",
         )
 
+    def _fake_stream_resp(self):
+        return [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="stream-ok", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ]
+            )
+        ]
+
     def test_retries_without_temperature_on_unsupported_value(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -337,6 +349,160 @@ class TestOpenAIUnsupportedTemperatureRetry:
             )
         # No temperature-retry for an unrelated 400 — exactly one attempt.
         assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_stream_openai_retries_without_temperature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        calls: list[dict] = []
+        err = Exception(
+            "Error code: 400 - Unsupported value: 'temperature' does not support 0.7"
+        )
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            if "temperature" in kwargs:
+                raise err
+            return self._fake_stream_resp()
+
+        fake_client = mock.MagicMock()
+        fake_client.chat.completions.create.side_effect = create
+
+        EngineRegistry.register_value("cloud", CloudEngine)
+        engine = CloudEngine()
+        engine._openai_client = fake_client
+
+        tokens = [
+            t
+            async for t in engine.stream(
+                [Message(role=Role.USER, content="Hi")],
+                model="gpt-5",
+                temperature=0.7,
+            )
+        ]
+        assert tokens == ["stream-ok"]
+        assert len(calls) == 2
+        assert "temperature" in calls[0]
+        assert "temperature" not in calls[1]
+
+    @pytest.mark.asyncio
+    async def test_stream_full_openai_retries_without_temperature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        calls: list[dict] = []
+        err = Exception(
+            "Error code: 400 - Unsupported value: 'temperature' does not support 0.7"
+        )
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            if "temperature" in kwargs:
+                raise err
+            return self._fake_stream_resp()
+
+        fake_client = mock.MagicMock()
+        fake_client.chat.completions.create.side_effect = create
+
+        EngineRegistry.register_value("cloud", CloudEngine)
+        engine = CloudEngine()
+        engine._openai_client = fake_client
+
+        chunks = [
+            c
+            async for c in engine.stream_full(
+                [Message(role=Role.USER, content="Hi")],
+                model="gpt-5",
+                temperature=0.7,
+            )
+        ]
+        assert len(chunks) == 1
+        assert chunks[0].content == "stream-ok"
+        assert chunks[0].finish_reason == "stop"
+        assert len(calls) == 2
+        assert "temperature" in calls[0]
+        assert "temperature" not in calls[1]
+
+    def test_generate_openrouter_retries_without_temperature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        calls: list[dict] = []
+        err = Exception(
+            "Error code: 400 - Unsupported parameter: "
+            "'temperature' is not supported with this model."
+        )
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            if "temperature" in kwargs:
+                raise err
+            return self._fake_resp()
+
+        fake_client = mock.MagicMock()
+        fake_client.chat.completions.create.side_effect = create
+
+        EngineRegistry.register_value("cloud", CloudEngine)
+        engine = CloudEngine()
+        engine._openrouter_client = fake_client
+
+        result = engine.generate(
+            [Message(role=Role.USER, content="Hi")],
+            model="openrouter/openai/o3-mini",
+            temperature=0.7,
+        )
+        assert result["content"] == "ok"
+        assert len(calls) == 2
+        assert "temperature" in calls[0]
+        assert "temperature" not in calls[1]
+
+    @pytest.mark.asyncio
+    async def test_stream_openrouter_retries_without_temperature(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        calls: list[dict] = []
+        err = Exception(
+            "Error code: 400 - Unsupported parameter: "
+            "'temperature' is not supported with this model."
+        )
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            if "temperature" in kwargs:
+                raise err
+            return self._fake_stream_resp()
+
+        fake_client = mock.MagicMock()
+        fake_client.chat.completions.create.side_effect = create
+
+        EngineRegistry.register_value("cloud", CloudEngine)
+        engine = CloudEngine()
+        engine._openrouter_client = fake_client
+
+        tokens = [
+            t
+            async for t in engine.stream(
+                [Message(role=Role.USER, content="Hi")],
+                model="openrouter/openai/o3-mini",
+                temperature=0.7,
+            )
+        ]
+        assert tokens == ["stream-ok"]
+        assert len(calls) == 2
+        assert "temperature" in calls[0]
+        assert "temperature" not in calls[1]
 
 
 # ---------------------------------------------------------------------------

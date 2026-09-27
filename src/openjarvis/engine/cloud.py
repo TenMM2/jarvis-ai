@@ -249,6 +249,20 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     )
 
 
+def _chat_completion_with_temperature_retry(
+    client: Any,
+    create_kwargs: Dict[str, Any],
+) -> Any:
+    """Invoke client.chat.completions.create, retrying without temperature on 400."""
+    try:
+        return client.chat.completions.create(**create_kwargs)
+    except Exception as exc:
+        if "temperature" in create_kwargs and _is_unsupported_temperature_error(exc):
+            create_kwargs.pop("temperature", None)
+            return client.chat.completions.create(**create_kwargs)
+        raise
+
+
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
     """Estimate USD cost based on the hardcoded pricing table."""
     # Try exact match first, then prefix match
@@ -690,19 +704,9 @@ class CloudEngine(InferenceEngine):
                 create_kwargs["response_format"] = response_format
 
         t0 = time.monotonic()
-        try:
-            resp = self._openai_client.chat.completions.create(**create_kwargs)
-        except Exception as exc:
-            # Some models reject a non-default temperature with a 400
-            # unsupported_value (see #426). Retry once without it rather
-            # than failing the user's first prompt.
-            if "temperature" in create_kwargs and _is_unsupported_temperature_error(
-                exc
-            ):
-                create_kwargs.pop("temperature", None)
-                resp = self._openai_client.chat.completions.create(**create_kwargs)
-            else:
-                raise
+        resp = _chat_completion_with_temperature_retry(
+            self._openai_client, create_kwargs
+        )
         elapsed = time.monotonic() - t0
         choice = _first_choice_or_raise(resp, provider="OpenAI", model=model)
         usage = resp.usage
@@ -1045,7 +1049,9 @@ class CloudEngine(InferenceEngine):
         if tool_choice is not None:
             create_kwargs["tool_choice"] = tool_choice
         t0 = time.monotonic()
-        resp = self._openrouter_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._openrouter_client, create_kwargs
+        )
         elapsed = time.monotonic() - t0
         choice = _first_choice_or_raise(resp, provider="OpenRouter", model=actual_model)
         usage = resp.usage
@@ -1109,7 +1115,9 @@ class CloudEngine(InferenceEngine):
         if tool_choice is not None:
             create_kwargs["tool_choice"] = tool_choice
         t0 = time.monotonic()
-        resp = self._atlascloud_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._atlascloud_client, create_kwargs
+        )
         elapsed = time.monotonic() - t0
         choice = resp.choices[0]
         usage = resp.usage
@@ -1167,7 +1175,9 @@ class CloudEngine(InferenceEngine):
             "temperature": temperature,
         }
         t0 = time.monotonic()
-        resp = self._minimax_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._minimax_client, create_kwargs
+        )
         elapsed = time.monotonic() - t0
         choice = _first_choice_or_raise(resp, provider="MiniMax", model=model)
         usage = resp.usage
@@ -1217,7 +1227,9 @@ class CloudEngine(InferenceEngine):
             "temperature": temperature,
         }
         t0 = time.monotonic()
-        resp = self._deepseek_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._deepseek_client, create_kwargs
+        )
         elapsed = time.monotonic() - t0
         choice = _first_choice_or_raise(resp, provider="DeepSeek", model=model)
         usage = resp.usage
@@ -1393,7 +1405,9 @@ class CloudEngine(InferenceEngine):
         }
         if not _is_openai_reasoning_model(model):
             create_kwargs["temperature"] = temperature
-        resp = self._openai_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._openai_client, create_kwargs
+        )
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
@@ -1647,7 +1661,9 @@ class CloudEngine(InferenceEngine):
         tool_choice = kwargs.pop("tool_choice", None)
         if tool_choice is not None:
             create_kwargs["tool_choice"] = tool_choice
-        resp = self._openrouter_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._openrouter_client, create_kwargs
+        )
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
@@ -1679,7 +1695,9 @@ class CloudEngine(InferenceEngine):
         tool_choice = kwargs.pop("tool_choice", None)
         if tool_choice is not None:
             create_kwargs["tool_choice"] = tool_choice
-        resp = self._atlascloud_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._atlascloud_client, create_kwargs
+        )
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
@@ -1705,7 +1723,9 @@ class CloudEngine(InferenceEngine):
             "temperature": temperature,
             "stream": True,
         }
-        resp = self._minimax_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._minimax_client, create_kwargs
+        )
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
@@ -1729,7 +1749,9 @@ class CloudEngine(InferenceEngine):
             "temperature": temperature,
             "stream": True,
         }
-        resp = self._deepseek_client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(
+            self._deepseek_client, create_kwargs
+        )
         for chunk in resp:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
@@ -1825,7 +1847,7 @@ class CloudEngine(InferenceEngine):
             }
             if not _is_openai_reasoning_model(model):
                 create_kwargs["temperature"] = temperature
-        resp = client.chat.completions.create(**create_kwargs)
+        resp = _chat_completion_with_temperature_retry(client, create_kwargs)
         for chunk in resp:
             choice = chunk.choices[0] if chunk.choices else None
             if not choice:
