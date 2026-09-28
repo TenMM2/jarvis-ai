@@ -369,22 +369,40 @@ class KnowledgeStore(MemoryBackend):
             return []
         fts_query = " OR ".join(f'"{term}"' for term in terms)
 
-        since_str = _to_iso(since) if since is not None else None
-        until_str = _to_iso(until) if until is not None else None
+        def _clean_str(val: Optional[str]) -> Optional[str]:
+            if isinstance(val, str):
+                return val.strip() or None
+            return val
+
+        source_val = _clean_str(source)
+        doc_type_val = _clean_str(doc_type)
+        author_val = _clean_str(author)
+
+        def _clean_ts(val: Union[datetime, str, None]) -> Union[datetime, str, None]:
+            if isinstance(val, str):
+                s = val.strip()
+                return s if s else None
+            return val
+
+        since_val = _clean_ts(since)
+        until_val = _clean_ts(until)
+
+        since_str = _to_iso(since_val) if since_val is not None else None
+        until_str = _to_iso(until_val) if until_val is not None else None
 
         # Build the WHERE clause for filter columns
         filters: List[str] = []
         params: List[Any] = []
 
-        if source is not None:
+        if source_val is not None:
             filters.append("kc.source = ?")
-            params.append(source)
-        if doc_type is not None:
+            params.append(source_val)
+        if doc_type_val is not None:
             filters.append("kc.doc_type = ?")
-            params.append(doc_type)
-        if author is not None:
+            params.append(doc_type_val)
+        if author_val is not None:
             filters.append("kc.author = ?")
-            params.append(author)
+            params.append(author_val)
         if since_str:
             filters.append("kc.timestamp >= ?")
             params.append(since_str)
@@ -415,9 +433,12 @@ class KnowledgeStore(MemoryBackend):
 
         try:
             rows = self._conn.execute(sql, [fts_query] + params + [top_k]).fetchall()
-        except sqlite3.OperationalError:
-            # Malformed FTS query — return empty rather than crash
-            return []
+        except sqlite3.OperationalError as exc:
+            # Only malformed FTS expressions are empty searches. Other SQLite
+            # failures must reach callers rather than masquerade as no matches.
+            if str(exc).lower().startswith("fts5: syntax error"):
+                return []
+            raise
 
         results: List[RetrievalResult] = []
         for row in rows:

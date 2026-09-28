@@ -109,32 +109,56 @@ class KnowledgeSearchTool(BaseTool):
                 success=False,
             )
 
-        top_k: int = int(params.get("top_k", 10))
-        source: Optional[str] = params.get("source")
-        doc_type: Optional[str] = params.get("doc_type")
-        author: Optional[str] = params.get("author")
-        since: Optional[str] = params.get("since")
-        until: Optional[str] = params.get("until")
+        raw_top_k = params.get("top_k")
+        try:
+            top_k: int = int(raw_top_k) if raw_top_k not in (None, "") else 10
+        except (ValueError, TypeError, OverflowError):
+            top_k = 10
+        top_k = max(1, top_k)
 
-        if self._retriever is not None:
-            results = self._retriever.retrieve(
-                query,
-                top_k=top_k,
-                source=source or "",
-                doc_type=doc_type or "",
-                author=author or "",
-                since=since or "",
-                until=until or "",
-            )
-        else:
-            results = self._store.retrieve(  # type: ignore[union-attr]
-                query,
-                top_k=top_k,
-                source=source,
-                doc_type=doc_type,
-                author=author,
-                since=since,
-                until=until,
+        filters: dict[str, Optional[str]] = {}
+        for name in ("source", "doc_type", "author", "since", "until"):
+            value = params.get(name)
+            if value is not None and not isinstance(value, str):
+                return ToolResult(
+                    tool_name="knowledge_search",
+                    content=f"Invalid {name} filter: expected a string.",
+                    success=False,
+                )
+            filters[name] = value.strip() or None if value else None
+
+        source = filters["source"]
+        doc_type = filters["doc_type"]
+        author = filters["author"]
+        since = filters["since"]
+        until = filters["until"]
+
+        try:
+            if self._retriever is not None:
+                results = self._retriever.retrieve(
+                    query,
+                    top_k=top_k,
+                    source=source or "",
+                    doc_type=doc_type or "",
+                    author=author or "",
+                    since=since or "",
+                    until=until or "",
+                )
+            else:
+                results = self._store.retrieve(  # type: ignore[union-attr]
+                    query,
+                    top_k=top_k,
+                    source=source,
+                    doc_type=doc_type,
+                    author=author,
+                    since=since,
+                    until=until,
+                )
+        except Exception as exc:
+            return ToolResult(
+                tool_name="knowledge_search",
+                content=f"Knowledge search failed: {exc}",
+                success=False,
             )
 
         if not results:
