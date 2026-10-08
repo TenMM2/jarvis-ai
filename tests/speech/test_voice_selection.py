@@ -139,10 +139,10 @@ def test_synthesis_failure_falls_back_without_retrying_or_leaking_voice(monkeypa
     speak("First reply", Console(), session)
     speak("Second reply", Console(), session)
 
-    assert checked == ["openai_tts", "kokoro"]
+    assert checked == ["openai_tts", "gemini_tts"]
     assert spoken == [
         ("openai_tts", "nova"),
-        ("kokoro", "bm_george"),
-        ("kokoro", "bm_george"),
+        ("gemini_tts", "Kore"),
+        ("gemini_tts", "Kore"),
     ]
     assert played == [b"wav", b"wav"]
