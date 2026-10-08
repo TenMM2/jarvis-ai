@@ -65,6 +65,9 @@ GOOGLE_ALL_SCOPES: List[str] = [
     # gmail.modify (a superset of gmail.readonly) so the proactive agent
     # can trash and label-modify (archive) emails after user approval.
     "https://www.googleapis.com/auth/gmail.modify",
+    # gmail.send so Jarvis can actually compose/send email on the user's
+    # behalf (gmail.modify does not cover sending).
+    "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/tasks.readonly",
 ]
 

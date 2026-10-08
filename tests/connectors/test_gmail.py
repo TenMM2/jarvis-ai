@@ -190,13 +190,14 @@ def test_disconnect(connector, tmp_path: Path) -> None:
 
 
 def test_mcp_tools(connector) -> None:
-    """mcp_tools() returns exactly 3 tools with the required names."""
+    """mcp_tools() returns exactly 4 tools with the required names."""
     tools = connector.mcp_tools()
     names = {t.name for t in tools}
-    assert len(tools) == 3
+    assert len(tools) == 4
     assert "gmail_search_emails" in names
     assert "gmail_get_thread" in names
     assert "gmail_list_unread" in names
+    assert "gmail_send_email" in names
 
 
 # ---------------------------------------------------------------------------

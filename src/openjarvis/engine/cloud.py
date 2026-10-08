@@ -5,6 +5,7 @@ OpenAI, Anthropic, Google, MiniMax, DeepSeek, and Atlas Cloud API backends.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -979,10 +980,16 @@ class CloudEngine(InferenceEngine):
                         "name": fc.name,
                         "arguments": json.dumps(fc_args),
                     }
-                    # Preserve thought_signature for Gemini reasoning models
+                    # Preserve thought_signature for Gemini reasoning models.
+                    # Keep the raw bytes for replay (used below when this
+                    # tool_call round-trips through history), but the copy
+                    # on tc_dict flows into Message/trace JSON serialization,
+                    # which cannot encode bytes — so that copy is base64 text.
                     sig = getattr(part, "thought_signature", None)
                     if sig is not None:
-                        tc_dict["thought_signature"] = sig
+                        tc_dict["thought_signature"] = base64.b64encode(sig).decode(
+                            "ascii"
+                        )
                         self._thought_sigs[tc_dict["id"]] = sig
                     tool_calls.append(tc_dict)
                 elif hasattr(part, "text") and part.text:
@@ -1618,7 +1625,13 @@ class CloudEngine(InferenceEngine):
                         calls.append(tool_call)
                         signature = getattr(part, "thought_signature", None)
                         if signature is not None:
-                            tool_call["thought_signature"] = signature
+                            # Keep the raw bytes for replay (see _generate_google's
+                            # history conversion), but the dict below flows into
+                            # Message/trace JSON serialization, which cannot
+                            # encode bytes — so that copy is base64 text instead.
+                            tool_call["thought_signature"] = base64.b64encode(
+                                signature
+                            ).decode("ascii")
                             self._thought_sigs[tool_id] = signature
                 if calls:
                     yield StreamChunk(tool_calls=calls)

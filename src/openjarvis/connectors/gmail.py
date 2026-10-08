@@ -130,6 +130,52 @@ def _gmail_api_modify_message(
     resp.raise_for_status()
 
 
+def _gmail_api_send_message(
+    token: str,
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    cc: str = "",
+) -> Dict[str, Any]:
+    """Send an email via the Gmail ``messages.send`` endpoint.
+
+    Builds a minimal RFC 2822 message and base64url-encodes it, as required
+    by the API's ``raw`` field.
+    """
+    import email.message
+
+    msg = email.message.EmailMessage()
+    msg["To"] = to
+    if cc:
+        msg["Cc"] = cc
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+    resp = httpx.post(
+        f"{_GMAIL_API_BASE}/messages/send",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"raw": raw},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _gmail_api_get_thread(token: str, thread_id: str) -> Dict[str, Any]:
+    """Fetch all messages in a Gmail thread via the ``threads.get`` endpoint."""
+    resp = httpx.get(
+        f"{_GMAIL_API_BASE}/threads/{thread_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"format": "full"},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _gmail_api_get_message(token: str, msg_id: str) -> Dict[str, Any]:
     """Fetch a single Gmail message by ID (``full`` format).
 
@@ -572,6 +618,13 @@ class GmailConnector(BaseConnector):
             _gmail_api_modify_message, msg_id, remove_labels=["INBOX"]
         )
 
+    def send_message(self, *, to: str, subject: str, body: str, cc: str = "") -> str:
+        """Send an email and return the new message's Gmail ID."""
+        result = self._call_with_refresh(
+            _gmail_api_send_message, to=to, subject=subject, body=body, cc=cc
+        )
+        return result.get("id", "")
+
     def sync_status(self) -> SyncStatus:
         """Return sync progress from the most recent :meth:`sync` call."""
         return SyncStatus(
@@ -647,6 +700,34 @@ class GmailConnector(BaseConnector):
                         },
                     },
                     "required": [],
+                },
+                category="communication",
+            ),
+            ToolSpec(
+                name="gmail_send_email",
+                description="Compose and send an email from the user's Gmail account.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {
+                            "type": "string",
+                            "description": "Recipient email address",
+                        },
+                        "subject": {
+                            "type": "string",
+                            "description": "Email subject line",
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "Plain-text email body",
+                        },
+                        "cc": {
+                            "type": "string",
+                            "description": "Optional CC email address",
+                            "default": "",
+                        },
+                    },
+                    "required": ["to", "subject", "body"],
                 },
                 category="communication",
             ),
