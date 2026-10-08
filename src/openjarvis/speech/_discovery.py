@@ -9,8 +9,10 @@ if TYPE_CHECKING:
     from openjarvis.core.config import JarvisConfig
     from openjarvis.speech._stubs import SpeechBackend
 
-# Priority order: local first, then cloud
+# Priority order: Gemini first (this project's chosen native-audio provider),
+# then local, then other cloud fallbacks.
 DISCOVERY_ORDER = [
+    "gemini",
     "faster-whisper",
     "openai",
     "deepgram",
@@ -43,6 +45,13 @@ def _create_backend(
             return backend_cls(api_key=api_key)
         elif key == "deepgram":
             api_key = os.environ.get("DEEPGRAM_API_KEY", "")
+            if not api_key:
+                return None
+            return backend_cls(api_key=api_key)
+        elif key == "gemini":
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
+                "GOOGLE_API_KEY", ""
+            )
             if not api_key:
                 return None
             return backend_cls(api_key=api_key)

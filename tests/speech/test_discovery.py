@@ -43,7 +43,8 @@ def test_auto_discovery_priority():
     """Auto mode tries backends in priority order."""
     from openjarvis.speech._discovery import DISCOVERY_ORDER
 
-    assert DISCOVERY_ORDER[0] == "faster-whisper"
+    assert DISCOVERY_ORDER[0] == "gemini"
+    assert "faster-whisper" in DISCOVERY_ORDER
     assert "openai" in DISCOVERY_ORDER
     assert "deepgram" in DISCOVERY_ORDER
 
@@ -54,9 +55,9 @@ def test_auto_discovery_skips_unhealthy_backend() -> None:
 
     config = JarvisConfig()
     config.speech.backend = "auto"
-    unhealthy = MagicMock(backend_id="faster-whisper")
+    unhealthy = MagicMock(backend_id="gemini")
     unhealthy.health.return_value = False
-    healthy = MagicMock(backend_id="openai")
+    healthy = MagicMock(backend_id="faster-whisper")
     healthy.health.return_value = True
 
     with patch(
@@ -67,8 +68,8 @@ def test_auto_discovery_skips_unhealthy_backend() -> None:
 
     assert result is healthy
     assert create.call_args_list == [
+        call("gemini", config),
         call("faster-whisper", config),
-        call("openai", config),
     ]
 
 
