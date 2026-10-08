@@ -81,6 +81,28 @@ def _gcal_api_event_patch(
     return resp.json()
 
 
+def _gcal_api_event_insert(
+    token: str,
+    calendar_id: str,
+    body: Dict[str, Any],
+    *,
+    with_meet: bool = False,
+) -> Dict[str, Any]:
+    """Create a calendar event, optionally attaching a Google Meet link."""
+    params: Dict[str, Any] = {}
+    if with_meet:
+        params["conferenceDataVersion"] = 1
+    resp = httpx.post(
+        f"{_GCAL_API_BASE}/calendars/{calendar_id}/events",
+        headers={"Authorization": f"Bearer {token}"},
+        params=params,
+        json=body,
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def _gcal_api_calendars_list(token: str) -> Dict[str, Any]:
     """Call the Calendar ``calendarList.list`` endpoint.
 
@@ -109,6 +131,8 @@ def _gcal_api_events_list(
     *,
     page_token: Optional[str] = None,
     time_min: Optional[str] = None,
+    time_max: Optional[str] = None,
+    query: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Call the Calendar ``events.list`` endpoint for a single calendar.
 
@@ -139,6 +163,10 @@ def _gcal_api_events_list(
         params["pageToken"] = page_token
     if time_min:
         params["timeMin"] = time_min
+    if time_max:
+        params["timeMax"] = time_max
+    if query:
+        params["q"] = query
 
     resp = httpx.get(
         f"{_GCAL_API_BASE}/calendars/{calendar_id}/events",
@@ -471,6 +499,46 @@ class GCalendarConnector(BaseConnector):
             updated.append({"email": user_email, "responseStatus": "declined"})
         _gcal_api_event_patch(token, calendar_id, event_id, {"attendees": updated})
 
+    def create_event(
+        self,
+        *,
+        summary: str,
+        start: str,
+        end: str,
+        attendees: Optional[List[str]] = None,
+        description: str = "",
+        calendar_id: str = "primary",
+        add_meet: bool = True,
+    ) -> Dict[str, Any]:
+        """Create a calendar event, optionally with a Google Meet link.
+
+        ``start``/``end`` are RFC3339 timestamps (e.g.
+        ``"2026-10-09T10:00:00-05:00"``). Returns the created event resource,
+        which includes ``htmlLink`` and (when ``add_meet`` is set)
+        ``hangoutLink``.
+        """
+        token = self._get_token()
+        body: Dict[str, Any] = {
+            "summary": summary,
+            "description": description,
+            "start": {"dateTime": start},
+            "end": {"dateTime": end},
+        }
+        if attendees:
+            body["attendees"] = [{"email": email} for email in attendees]
+        if add_meet:
+            import uuid
+
+            body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+        return _gcal_api_event_insert(
+            token, calendar_id, body, with_meet=add_meet
+        )
+
     def sync_status(self) -> SyncStatus:
         """Return sync progress from the most recent :meth:`sync` call."""
         return SyncStatus(
@@ -557,6 +625,56 @@ class GCalendarConnector(BaseConnector):
                         },
                     },
                     "required": [],
+                },
+                category="productivity",
+            ),
+            ToolSpec(
+                name="calendar_create_event",
+                description=(
+                    "Create a new Google Calendar event, optionally with a "
+                    "Google Meet video-call link attached."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "Event title",
+                        },
+                        "start": {
+                            "type": "string",
+                            "description": (
+                                "Start time as an RFC3339 timestamp, e.g. "
+                                "'2026-10-09T10:00:00-05:00'"
+                            ),
+                        },
+                        "end": {
+                            "type": "string",
+                            "description": "End time as an RFC3339 timestamp",
+                        },
+                        "attendees": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Attendee email addresses to invite",
+                            "default": [],
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Event description/notes",
+                            "default": "",
+                        },
+                        "add_meet": {
+                            "type": "boolean",
+                            "description": "Attach a Google Meet video link",
+                            "default": True,
+                        },
+                        "calendar_id": {
+                            "type": "string",
+                            "description": "Calendar to create the event on",
+                            "default": "primary",
+                        },
+                    },
+                    "required": ["summary", "start", "end"],
                 },
                 category="productivity",
             ),

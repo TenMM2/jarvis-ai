@@ -519,7 +519,10 @@ async def test_stream_full_google_preserves_tool_calls(monkeypatch: pytest.Monke
         "name": "get_weather",
         "arguments": '{"city": "Berlin"}',
     }
-    assert tool_call["thought_signature"] == b"sig"
+    # Raw bytes aren't JSON-serializable (traces persist tool_calls as JSON),
+    # so the dict carries the base64 text form; engine._thought_sigs (checked
+    # elsewhere) keeps the real bytes for history replay.
+    assert tool_call["thought_signature"] == "c2ln"
     assert engine._thought_sigs[tool_call["id"]] == b"sig"
     assert result[-1].finish_reason == "tool_calls"
     config = client.models.generate_content_stream.call_args.kwargs["config"]

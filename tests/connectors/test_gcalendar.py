@@ -167,13 +167,14 @@ def test_disconnect(connector, tmp_path: Path) -> None:
 
 
 def test_mcp_tools(connector) -> None:
-    """mcp_tools() returns exactly 3 tools with the required names."""
+    """mcp_tools() returns exactly 4 tools with the required names."""
     tools = connector.mcp_tools()
     names = {t.name for t in tools}
-    assert len(tools) == 3
+    assert len(tools) == 4
     assert "calendar_get_events_today" in names
     assert "calendar_search_events" in names
     assert "calendar_next_meeting" in names
+    assert "calendar_create_event" in names
 
 
 # ---------------------------------------------------------------------------
