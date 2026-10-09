@@ -7,11 +7,17 @@ import { transcribeAudio } from '../lib/api';
 // speech to start, then cut the turn once it's been quiet for a bit. The
 // thresholds are on normalized (0..1) RMS of 8-bit time-domain samples, not
 // dBFS, so they're tuned empirically rather than to a physical unit.
+// Fixed fallbacks — overridden per-call by the noise-floor calibration done
+// in start(), since a hardcoded absolute RMS threshold turned out not to
+// survive different mics/gain/room noise: a value tuned on one machine
+// silently never triggered on another (recordTurn would just time out every
+// 7s with "nothing heard", which looks identical to the call being stuck).
 const SPEECH_RMS_THRESHOLD = 0.035;
 const SILENCE_RMS_THRESHOLD = 0.02;
 const SILENCE_HOLD_MS = 900;
 const STARTUP_SILENCE_MS = 7000;
 const MAX_TURN_MS = 15000;
+const NOISE_FLOOR_CALIBRATION_MS = 400;
 
 export const JARVIS_CALL_PERSONA =
   'Eres Jarvis, el asistente de IA personal al estilo del mayordomo de Tony ' +
@@ -49,6 +55,19 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
   const bargeRafRef = useRef<number | null>(null);
   const sendTurnRef = useRef(sendTurn);
   sendTurnRef.current = sendTurn;
+  // Ambient noise floor measured fresh for each call (see calibrateNoiseFloor
+  // in start()); thresholds below are derived from it instead of fixed
+  // constants, so a noisier room or a hotter mic gain doesn't just silently
+  // never trigger speech detection.
+  const noiseFloorRef = useRef(0.01);
+  const speechThreshold = useCallback(
+    () => Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current * 2.5),
+    [],
+  );
+  const silenceThreshold = useCallback(
+    () => Math.max(SILENCE_RMS_THRESHOLD, noiseFloorRef.current * 1.4),
+    [],
+  );
 
   useEffect(() => {
     const Ctor = (window as any).MediaRecorder;
@@ -136,9 +155,10 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       const tick = () => {
         if (settled || !activeRef.current) return;
         analyser.getByteTimeDomainData(data);
-        if (rms(data) * 4 > SPEECH_RMS_THRESHOLD) {
+        if (rms(data) * 4 > speechThreshold()) {
           speechFrames += 1;
           if (speechFrames > 2) {
+            console.log('[jarvis-call] barge-in detected — cutting Jarvis off');
             finish('bargein');
             return;
           }
@@ -149,7 +169,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       };
       tick();
     });
-  }, []);
+  }, [speechThreshold]);
 
   // Records one utterance on the call's shared mic stream. Resolves with a
   // Blob once speech was heard and then paused, or null if nothing was said
@@ -182,6 +202,13 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       let silenceSince: number | null = null;
       const startedAt = Date.now();
       const data = new Uint8Array(analyser.frequencyBinCount);
+      const speechCutoff = speechThreshold();
+      const silenceCutoff = silenceThreshold();
+      let lastLevelLogAt = 0;
+      console.log('[jarvis-call] recording turn — thresholds', {
+        speech: speechCutoff.toFixed(4),
+        silence: silenceCutoff.toFixed(4),
+      });
 
       const tick = () => {
         if (!activeRef.current) {
@@ -193,13 +220,20 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         useCallStore.getState().setLevel(level);
         const now = Date.now();
 
-        if (level > SPEECH_RMS_THRESHOLD) {
+        if (now - lastLevelLogAt > 500) {
+          lastLevelLogAt = now;
+          console.log('[jarvis-call] level', level.toFixed(4), hasSpoken ? '(speaking)' : '(waiting for speech)');
+        }
+
+        if (level > speechCutoff) {
+          if (!hasSpoken) console.log('[jarvis-call] audio chunk captured — speech detected');
           hasSpoken = true;
           gotSpeech = true;
           silenceSince = null;
-        } else if (hasSpoken && level < SILENCE_RMS_THRESHOLD) {
+        } else if (hasSpoken && level < silenceCutoff) {
           if (silenceSince === null) silenceSince = now;
           else if (now - silenceSince > SILENCE_HOLD_MS) {
+            console.log('[jarvis-call] silence detected -> sending to STT');
             recorder.stop();
             return;
           }
@@ -208,10 +242,12 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         }
 
         if (!hasSpoken && now - startedAt > STARTUP_SILENCE_MS) {
+          console.log('[jarvis-call] startup timeout — nothing heard, still listening');
           recorder.stop();
           return;
         }
         if (now - startedAt > MAX_TURN_MS) {
+          console.log('[jarvis-call] max turn length reached -> sending to STT');
           recorder.stop();
           return;
         }
@@ -221,7 +257,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       recorder.start();
       tick();
     });
-  }, [stopLevelLoop]);
+  }, [stopLevelLoop, speechThreshold, silenceThreshold]);
 
   const loop = useCallback(async () => {
     while (activeRef.current) {
@@ -242,7 +278,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       try {
         const result = await transcribeAudio(blob);
         text = result.text?.trim() ?? '';
-        console.log('[jarvis-call] transcribed:', JSON.stringify(text));
+        console.log('[jarvis-call] STT received:', JSON.stringify(text));
       } catch (err) {
         console.error('[jarvis-call] transcription failed', err);
         useCallStore.getState().setError(
@@ -282,6 +318,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         );
         continue;
       }
+      console.log('[jarvis-call] playing audio response');
       // speak() resolves once playback *starts*, not once it ends — that's
       // exactly when the <audio> element exists and can be tapped.
       monitorPlaybackLevel();
@@ -311,8 +348,12 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       // echoCancellation matters a lot more here than in turn-based mode:
       // with barge-in, Jarvis's own voice coming back through the speakers
       // and into the mic can otherwise trigger a false self-interruption.
+      // noiseSuppression/autoGainControl are deliberately left off: on at
+      // least one real setup they flattened the mic signal enough that
+      // actual speech never crossed the fixed RMS threshold below, and the
+      // call just looked "stuck" on LISTENING forever.
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { echoCancellation: true },
       });
       console.log('[jarvis-call] microphone permission granted');
       streamRef.current = stream;
@@ -323,6 +364,29 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       analyser.fftSize = 512;
       source.connect(analyser);
       analyserRef.current = analyser;
+
+      // Calibrate the noise floor against this room/mic before judging any
+      // real speech, so the speech/silence thresholds adapt instead of
+      // relying on a constant tuned on someone else's machine.
+      await new Promise<void>((resolve) => {
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const samples: number[] = [];
+        const startedAt = performance.now();
+        const sample = () => {
+          analyser.getByteTimeDomainData(data);
+          samples.push(rms(data));
+          if (performance.now() - startedAt < NOISE_FLOOR_CALIBRATION_MS) {
+            requestAnimationFrame(sample);
+          } else {
+            const avg = samples.reduce((a, b) => a + b, 0) / Math.max(1, samples.length);
+            noiseFloorRef.current = avg;
+            console.log('[jarvis-call] noise floor calibrated:', avg.toFixed(4));
+            resolve();
+          }
+        };
+        sample();
+      });
+
       activeRef.current = true;
       useCallStore.getState().setActive(true);
       void loop();
