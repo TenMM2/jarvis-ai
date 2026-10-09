@@ -102,6 +102,11 @@ export function JarvisVoiceScreen({ fullViewport = false, onHangUp, showExitToTe
         <p className="text-[11px] font-mono tracking-widest" style={{ color: accent, opacity: 0.5 }}>
           {isActive ? 'TAP CORE TO DISCONNECT' : error ? 'TAP CORE TO RETRY' : 'TAP CORE TO CONNECT'}
         </p>
+        {isActive && state === 'listening' && (
+          <p className="text-[10px] font-mono tracking-widest" style={{ color: accent, opacity: 0.3 }}>
+            OR PRESS SPACE TO SEND NOW
+          </p>
+        )}
         {showExitToText && !isActive && (
           <button
             onClick={() => useAppStore.getState().updateSettings({ voiceHudMode: false })}
