@@ -252,3 +252,51 @@ describe('autoplay gating', () => {
     ).toBe(false);
   });
 });
+
+describe('playback edge cases', () => {
+  it('does not stick on "speaking" when the clip ends before play() resolves', async () => {
+    synth.mockResolvedValue(new Blob(['x']));
+    // A very short clip: onended fires, and only then does play() resolve.
+    class ShortClip extends FakeAudio {
+      play(): Promise<void> {
+        this.playCalls += 1;
+        return new Promise((resolve) => {
+          this.onended?.();
+          resolve();
+        });
+      }
+    }
+    vi.stubGlobal('Audio', ShortClip as unknown as typeof Audio);
+
+    await useTtsStore.getState().speak('m1', 'hola');
+
+    expect(useTtsStore.getState().state).toBe('idle');
+    expect(useTtsStore.getState().speakingId).toBeNull();
+  });
+
+  it('falls back to the browser voice when server synthesis fails', async () => {
+    synth.mockRejectedValue(new Error('429 RESOURCE_EXHAUSTED'));
+    const spoken: string[] = [];
+    class FakeUtterance {
+      lang = '';
+      voice: unknown = null;
+      onend: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(public text: string) {}
+    }
+    const speechSynthesis = {
+      getVoices: () => [{ lang: 'es-ES', name: 'Spanish' }],
+      speak: (u: FakeUtterance) => spoken.push(u.text),
+      cancel: () => {},
+      onvoiceschanged: null,
+    };
+    vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance);
+    vi.stubGlobal('window', { speechSynthesis });
+
+    await useTtsStore.getState().speak('m1', 'hola señor');
+
+    expect(spoken).toEqual(['hola señor']);
+    expect(useTtsStore.getState().state).toBe('speaking');
+    expect(useTtsStore.getState().error).toBeNull();
+  });
+});

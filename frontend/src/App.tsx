@@ -17,8 +17,9 @@ import { fetchModels, fetchServerInfo, fetchSavings, submitSavings, isTauri, get
 
 // Keep in sync with the Google entry in CommandPalette.tsx's CLOUD_PROVIDERS.
 const DEFAULT_CLOUD_MODEL_BY_KEY: Record<string, string> = {
-  GEMINI_API_KEY: 'gemini-3.8-flash',
-  GOOGLE_API_KEY: 'gemini-3.8-flash',
+  // Lite: ~6s/step on gemini-3.8-flash vs under a second here, and its free-tier quota is separate.
+  GEMINI_API_KEY: 'gemini-3.5-flash-lite',
+  GOOGLE_API_KEY: 'gemini-3.5-flash-lite',
   ANTHROPIC_API_KEY: 'claude-sonnet-4-6',
   OPENAI_API_KEY: 'gpt-4o-mini',
 };

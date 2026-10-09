@@ -52,6 +52,7 @@ export function shouldAutoplayFinishedReply(
 }
 
 function teardown(): void {
+  if (typeof window !== 'undefined' && 'speechSynthesis' in window) window.speechSynthesis.cancel();
   if (audio) {
     // Detach first: clearing src re-runs the media load algorithm, which fails
     // on an empty source and dispatches an `error` event. With the handler
@@ -71,6 +72,37 @@ function teardown(): void {
     controller.abort();
     controller = null;
   }
+}
+
+
+/**
+ * Reserve voice when the server's TTS fails (quota, backend down...):
+ * the browser's own speechSynthesis. Lower quality, but the user still hears
+ * the reply instead of silence. Resolves true once speech has been queued.
+ * An empty voice list makes some browsers drop the utterance silently, so
+ * wait (briefly) for voiceschanged before speaking.
+ */
+async function speakInBrowser(text: string, onEnd: () => void): Promise<boolean> {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return false;
+  const synth = window.speechSynthesis;
+  if (synth.getVoices().length === 0) {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 1000);
+      synth.onvoiceschanged = () => {
+        clearTimeout(timer);
+        synth.onvoiceschanged = null;
+        resolve();
+      };
+    });
+  }
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'es-ES';
+  const voice = synth.getVoices().find((v) => v.lang?.toLowerCase().startsWith('es'));
+  if (voice) utter.voice = voice;
+  utter.onend = onEnd;
+  utter.onerror = onEnd;
+  synth.speak(utter);
+  return true;
 }
 
 export const useTtsStore = create<TtsStore>((set, get) => ({
@@ -120,23 +152,40 @@ export const useTtsStore = create<TtsStore>((set, get) => ({
       const el = new Audio(url);
       audio = el;
 
+      let finished = false;
       el.onended = () => {
+        finished = true;
         if (mine !== token) return;
         teardown();
         set({ state: 'idle', speakingId: null });
       };
       el.onerror = () => {
+        finished = true;
         if (mine !== token) return;
         teardown();
         set({ state: 'idle', speakingId: null, error: 'Playback failed', errorId: id });
       };
 
       await el.play();
-      if (mine === token) set({ state: 'speaking', speakingId: id });
+      // play() can resolve *after* a short clip has already finished and
+      // fired onended (teardown() then clears el.src, which resets
+      // el.ended, hence the local flag). Marking 'speaking' then would stick
+      // forever, since nothing is left to end it.
+      if (mine === token && !finished && !el.ended) set({ state: 'speaking', speakingId: id });
     } catch (err) {
       if (mine !== token) return;
       if (err instanceof DOMException && err.name === 'AbortError') return;
       teardown();
+      console.warn('[tts] server TTS failed, trying browser voice:', err);
+      const started = await speakInBrowser(trimmed, () => {
+        if (mine !== token) return;
+        set({ state: 'idle', speakingId: null });
+      });
+      if (mine !== token) return;
+      if (started) {
+        set({ state: 'speaking', speakingId: id, error: null, errorId: null });
+        return;
+      }
       set({
         state: 'idle',
         speakingId: null,
