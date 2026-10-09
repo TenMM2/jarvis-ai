@@ -488,10 +488,15 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       await useTtsStore.getState().speak('call-reply', reply);
       const ttsAfterSpeak = useTtsStore.getState();
       if (ttsAfterSpeak.state !== 'speaking') {
-        console.error('[jarvis-call] TTS playback failed', ttsAfterSpeak.error);
-        useCallStore.getState().setError(
-          ttsAfterSpeak.error ? `Voice playback failed: ${ttsAfterSpeak.error}` : 'Voice playback failed',
-        );
+        if (ttsAfterSpeak.error) {
+          console.error('[jarvis-call] TTS playback failed', ttsAfterSpeak.error);
+          useCallStore.getState().setError(`Voice playback failed: ${ttsAfterSpeak.error}`);
+          continue;
+        }
+        // Idle with no error: the clip was short enough to finish before
+        // speak() returned. That's success, not a failure.
+        console.log('[jarvis-call] reply finished playing');
+        await new Promise((r) => setTimeout(r, POST_SPEECH_PAUSE_MS));
         continue;
       }
       console.log('[jarvis-call] playing audio response');
