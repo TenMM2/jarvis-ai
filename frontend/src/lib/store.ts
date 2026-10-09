@@ -113,6 +113,11 @@ interface Settings {
   // mic button. Defaults off: it's a second always-on microphone grant on
   // top of speechEnabled, so it needs its own explicit opt-in.
   wakeWordEnabled: boolean;
+  // Home screen defaults to the full-screen voice HUD ("J.A.R.V.I.S.") rather
+  // than the classic message-list + textarea. Users who prefer typing can
+  // switch back from the HUD's own toggle; this just persists that choice.
+  voiceHudMode: boolean;
+  hudTheme: 'blue' | 'amber';
 }
 
 function loadSettings(): Settings {
@@ -129,6 +134,8 @@ function loadSettings(): Settings {
     voiceOutputEnabled: false,
     voiceAutoplay: false,
     wakeWordEnabled: false,
+    voiceHudMode: true,
+    hudTheme: 'blue',
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);

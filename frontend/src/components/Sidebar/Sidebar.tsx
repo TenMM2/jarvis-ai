@@ -17,6 +17,7 @@ import {
   Loader2,
   ScrollText,
   Database,
+  Orbit,
 } from 'lucide-react';
 import { ConversationList } from './ConversationList';
 import { useAppStore } from '../../lib/store';
@@ -51,6 +52,8 @@ export function Sidebar() {
     createConversation(selectedModel);
     navigate('/');
   };
+
+  const voiceHudMode = settings.voiceHudMode;
 
   const navItems = [
     { path: '/', icon: MessageSquare, label: 'Chat' },
@@ -193,6 +196,19 @@ export function Sidebar() {
 
           {/* Bottom nav */}
           <nav className="px-2 pb-3 pt-2 flex flex-col gap-0.5" style={{ borderTop: '1px solid var(--color-border)' }}>
+            <button
+              onClick={() => updateSettings({ voiceHudMode: true })}
+              className="relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors w-full text-left cursor-pointer"
+              style={{
+                background: voiceHudMode ? 'var(--color-accent-subtle)' : 'transparent',
+                color: voiceHudMode ? 'var(--color-text)' : 'var(--color-text-secondary)',
+                fontWeight: voiceHudMode ? 500 : 400,
+              }}
+              title="Full-screen voice HUD"
+            >
+              <Orbit size={16} />
+              Jarvis HUD
+            </button>
             {navItems.map((item) => {
               const isActive = location.pathname === item.path;
               return (
