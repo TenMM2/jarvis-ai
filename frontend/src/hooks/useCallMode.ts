@@ -488,6 +488,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         stream = await navigator.mediaDevices.getUserMedia({ audio: processing });
       }
       console.log('[jarvis-call] microphone permission granted');
+      useCallStore.getState().setMicLabel(stream.getAudioTracks()[0]?.label ?? '');
       for (const track of stream.getAudioTracks()) {
         // Flat-zero levels with no error anywhere usually trace back to one
         // of these: readyState !== 'live' (track already dead), enabled ===
@@ -578,6 +579,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
   const end = useCallback(() => {
     activeRef.current = false;
+    useCallStore.getState().setMicLabel('');
     forceStopRef.current = null;
     stopLevelLoop();
     useTtsStore.getState().stop();
