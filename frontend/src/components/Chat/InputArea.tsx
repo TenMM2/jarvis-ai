@@ -11,7 +11,29 @@ import {
   resolveChatEngine,
 } from '../../lib/chat-telemetry';
 import { MicButton } from './MicButton';
+import { JarvisCore } from './JarvisCore';
 import { useSpeech } from '../../hooks/useSpeech';
+import { useWakeWord } from '../../hooks/useWakeWord';
+import { useTtsStore } from '../../lib/tts';
+
+const WAKE_GREETING = 'Hola, soy Jarvis. ¿Qué tareas tenemos hoy?';
+// No server-side silence detection exists for the browser mic path (unlike
+// the CLI's record_until_silence), so a hands-free turn listens for a fixed
+// window rather than waiting indefinitely for the user to stop talking.
+const WAKE_LISTEN_WINDOW_MS = 6000;
+
+/** Resolves once TTS playback (if any) returns to idle. */
+function waitForTtsIdle(): Promise<void> {
+  if (useTtsStore.getState().state === 'idle') return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = useTtsStore.subscribe((s) => {
+      if (s.state === 'idle') {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+}
 import type {
   ChatMessage,
   MessageTelemetry,
@@ -110,6 +132,7 @@ export function InputArea() {
     startRecording,
     stopRecording,
   } = useSpeech();
+  const ttsCoreState = useTtsStore((s) => s.state);
 
   // Abort in-flight stream when the user switches models mid-generation.
   // This prevents errors from trying to continue a stream with a stale model.
@@ -171,8 +194,12 @@ export function InputArea() {
     resetStream();
   }, [resetStream]);
 
-  const sendMessage = useCallback(async () => {
-    const content = input.trim();
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    // overrideText lets the wake-word flow send a just-transcribed utterance
+    // without round-tripping through setInput first — setState is async, so
+    // sendMessage() called right after setInput(text) would still read the
+    // previous render's `input`.
+    const content = (overrideText ?? input).trim();
     if (!content || streamState.isStreaming) return;
     if (!selectedModel) {
       toast.error('Pick a model first (⌘K)');
@@ -554,6 +581,42 @@ export function InputArea() {
     maxTokens,
   ]);
 
+  const wakeWordSetting = useAppStore((s) => s.settings.wakeWordEnabled);
+  const voiceOutputEnabled = useAppStore((s) => s.settings.voiceOutputEnabled);
+  const wakeWordEnabled = wakeWordSetting && speechEnabled && voiceOutputEnabled && speechAvailable;
+
+  const handleWake = useCallback(async () => {
+    // A turn already in flight (manual mic, or an overlapping wake trigger)
+    // — ignore rather than queue, the user can just say "Jarvis" again.
+    if (streamState.isStreaming || speechState !== 'idle') return;
+    wakeWordRef.current?.pause();
+    try {
+      await useTtsStore.getState().speak('wake-greeting', WAKE_GREETING);
+      await waitForTtsIdle();
+      await startRecording();
+      await new Promise((r) => setTimeout(r, WAKE_LISTEN_WINDOW_MS));
+      const text = await stopRecording().catch(() => '');
+      if (text) {
+        await sendMessage(text);
+        // Give the reply-autoplay effect (in ChatArea) a beat to kick in
+        // before checking whether playback is done — right after
+        // sendMessage resolves, tts is still idle if autoplay hasn't
+        // started yet, and waitForTtsIdle would return immediately.
+        await new Promise((r) => setTimeout(r, 400));
+        await waitForTtsIdle();
+      }
+    } finally {
+      wakeWordRef.current?.resume();
+    }
+  }, [streamState.isStreaming, speechState, startRecording, stopRecording, sendMessage]);
+
+  // useWakeWord needs `pause`/`resume` inside handleWake, and handleWake is
+  // wakeWord's own onWake callback — a ref breaks that cycle without forcing
+  // the hook to re-subscribe its SpeechRecognition instance every render.
+  const wakeWordRef = useRef<{ pause: () => void; resume: () => void } | null>(null);
+  const wakeWord = useWakeWord('jarvis', handleWake, wakeWordEnabled);
+  wakeWordRef.current = wakeWord;
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -595,6 +658,24 @@ export function InputArea() {
           </div>
         )}
       </div>
+      {speechEnabled && (
+        <div className="flex items-center justify-center mb-1" title={
+          wakeWordEnabled
+            ? wakeWord.supported ? 'Wake word armed — say "Jarvis"' : 'Wake word not supported in this browser'
+            : undefined
+        }>
+          <JarvisCore
+            size={28}
+            state={
+              speechState === 'recording' ? 'listening'
+              : speechState === 'transcribing' ? 'thinking'
+              : ttsCoreState === 'speaking' || ttsCoreState === 'loading' ? 'speaking'
+              : isCurrentChatStreaming ? 'thinking'
+              : 'idle'
+            }
+          />
+        </div>
+      )}
       <div
         className="flex items-center gap-2 rounded-2xl px-4 py-3 transition-shadow"
         style={{
@@ -632,7 +713,7 @@ export function InputArea() {
               reason={micReason}
             />
             <button
-              onClick={sendMessage}
+              onClick={() => sendMessage()}
               disabled={streamState.isStreaming || !input.trim() || modelLoading || !selectedModel}
               title={selectedModel ? 'Send message' : 'Pick a model first (⌘K)'}
               className="p-2 rounded-xl transition-colors shrink-0 cursor-pointer disabled:opacity-30 disabled:cursor-default"

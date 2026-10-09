@@ -108,6 +108,11 @@ interface Settings {
   speechEnabled: boolean;
   voiceOutputEnabled: boolean;
   voiceAutoplay: boolean;
+  // Continuous local wake-word listening ("Jarvis"), via the browser's own
+  // SpeechRecognition — free and on-device, distinct from the Gemini-backed
+  // mic button. Defaults off: it's a second always-on microphone grant on
+  // top of speechEnabled, so it needs its own explicit opt-in.
+  wakeWordEnabled: boolean;
 }
 
 function loadSettings(): Settings {
@@ -123,6 +128,7 @@ function loadSettings(): Settings {
     speechEnabled: false,
     voiceOutputEnabled: false,
     voiceAutoplay: false,
+    wakeWordEnabled: false,
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
