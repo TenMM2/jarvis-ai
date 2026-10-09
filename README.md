@@ -14,8 +14,9 @@ y reuniones (con Google Meet) por voz o por chat.
   mientras estás en la llamada.
 - **Palabra de activación** ("Jarvis") opcional, detectada en el navegador
   sin coste de API.
-- **Voz nativa de Gemini** tanto para entender audio (STT) como para hablar
-  (TTS) — no se usan servicios de voz de terceros.
+- **Voz**: el reconocimiento (STT) corre en local con faster-whisper (sin
+  cuota de API ni coste); la síntesis (TTS) usa la voz nativa de Gemini, con
+  la voz del navegador como respaldo si se agota la cuota gratuita.
 - **Gmail**: buscar correos, leer hilos, listar no leídos, enviar correos.
 - **Google Calendar**: ver eventos de hoy, buscar eventos, próxima reunión,
   crear eventos con enlace de Google Meet.
@@ -60,7 +61,9 @@ cd ..
    El archivo `.env` nunca se sube al repositorio (ver `.gitignore`).
 
 2. (Primera vez) revisa que `~/.openjarvis/config.toml` tenga Gemini como
-   motor por defecto. Si no existe, `jarvis` lo crea con valores por defecto
+   motor por defecto y, en `[speech]`, `backend = "faster-whisper"` con
+   `model = "base"`, `device = "cpu"`, `compute_type = "int8"` (el modelo se
+   descarga solo la primera vez, ~150 MB). Si no existe, `jarvis` lo crea con valores por defecto
    la primera vez que arrancas.
 
 ## Arranque
