@@ -1,8 +1,9 @@
 name: Track Git Clones
 
+# Manual-only: the automatic triggers (push, pull_request, schedule) were
+# removed because they burned the free GitHub Actions minutes. Run this from
+# the Actions tab ("Run workflow") when you actually need it.
 on:
-  schedule:
-    - cron: '0 6 * * *'  # Daily at 06:00 UTC
   workflow_dispatch:
 
 permissions:

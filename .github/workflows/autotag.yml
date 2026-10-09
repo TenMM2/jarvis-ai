@@ -1,8 +1,9 @@
 name: Auto-tag on main push
 
+# Manual-only: the automatic triggers (push, pull_request, schedule) were
+# removed because they burned the free GitHub Actions minutes. Run this from
+# the Actions tab ("Run workflow") when you actually need it.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

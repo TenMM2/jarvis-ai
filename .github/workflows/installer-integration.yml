@@ -1,14 +1,10 @@
 name: Installer integration
 
+# Manual-only: the automatic triggers (push, pull_request, schedule) were
+# removed because they burned the free GitHub Actions minutes. Run this from
+# the Actions tab ("Run workflow") when you actually need it.
 on:
-  pull_request:
-    paths:
-      - 'scripts/install/**'
-      - 'src/openjarvis/cli/**'
-      - 'tests/install/**'
-      - '.github/workflows/installer-integration.yml'
-  schedule:
-    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   container-matrix:

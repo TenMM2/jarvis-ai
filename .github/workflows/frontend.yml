@@ -1,16 +1,9 @@
 name: Frontend CI
 
+# Manual-only: the automatic triggers (push, pull_request, schedule) were
+# removed because they burned the free GitHub Actions minutes. Run this from
+# the Actions tab ("Run workflow") when you actually need it.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend.yml'
   workflow_dispatch:
 
 concurrency:
