@@ -4,20 +4,18 @@ import { useTtsStore, getActiveAudioElement } from '../lib/tts';
 import { transcribeAudio } from '../lib/api';
 
 // Mirrors the CLI's record_until_silence (speech/voice_io.py): wait for
-// speech to start, then cut the turn once it's been quiet for a bit. The
-// thresholds are on normalized (0..1) RMS of 8-bit time-domain samples, not
-// dBFS, so they're tuned empirically rather than to a physical unit.
-// Fixed fallbacks — overridden per-call by the noise-floor calibration done
-// in start(), since a hardcoded absolute RMS threshold turned out not to
-// survive different mics/gain/room noise: a value tuned on one machine
-// silently never triggered on another (recordTurn would just time out every
-// 7s with "nothing heard", which looks identical to the call being stuck).
-// Lowered from 0.035/0.02 after a real user's actual speaking level measured
-// only 0.0208–0.0263 on their mic — the old fixed threshold simply never saw
-// speech as speech, regardless of calibration (see speechThreshold/
-// silenceThreshold below, which still add the noise floor on top of these).
-const SPEECH_RMS_THRESHOLD = 0.016;
-const SILENCE_RMS_THRESHOLD = 0.013;
+// speech to start, then cut the turn once it's been quiet for a bit.
+// Levels are raw float RMS (0..1, see readRms) and the thresholds are
+// *relative to the room*: they're derived from a noise floor measured at the
+// start of each call, because absolute constants kept failing on real mics —
+// one user's quiet array mic peaks around 0.005 while another's is 10x that.
+// These constants are only minimums so a perfectly silent floor can't make
+// the detector hair-trigger.
+const MIN_SPEECH_RMS = 0.0025;
+const MIN_SILENCE_RMS = 0.0012;
+const SPEECH_OVER_FLOOR = 3.5; // speech starts at floor * this
+const SILENCE_OVER_FLOOR = 1.8; // "quiet again" is floor * this...
+const SILENCE_PEAK_FRACTION = 0.2; // ...or 20% of this turn's loudest moment
 const SILENCE_HOLD_MS = 800;
 const STARTUP_SILENCE_MS = 7000;
 // Lowered from 15s: a real turn that reaches this is almost always a silence
@@ -25,7 +23,8 @@ const STARTUP_SILENCE_MS = 7000;
 // straight — better to cut losses (and the request-size/quota cost of a
 // needlessly long recording) than wait out the old ceiling.
 const MAX_TURN_MS = 10000;
-const NOISE_FLOOR_CALIBRATION_MS = 400;
+const NOISE_FLOOR_WARMUP_MS = 300; // ignore the mic's start-up settling
+const NOISE_FLOOR_CALIBRATION_MS = 700;
 
 export const JARVIS_CALL_PERSONA =
   'Eres Jarvis, el asistente de IA personal al estilo del mayordomo de Tony ' +
@@ -36,14 +35,28 @@ export const JARVIS_CALL_PERSONA =
   'en voz. Tu respuesta se va a leer en voz alta, así que evita listas, ' +
   'markdown o texto que no suene natural al hablarlo.';
 
-function rms(data: Uint8Array): number {
+// Raw RMS of the analyser's float waveform with the DC offset removed. The
+// byte variant (getByteTimeDomainData) only has 1/128 resolution, so on a
+// quiet mic it reads a flat ~0.005 whether or not anyone is talking — which
+// is exactly why the call never saw speech start or stop. Floats keep the
+// real (tiny) signal, and subtracting the mean stops a constant mic bias
+// from looking like sound.
+function readRms(analyser: AnalyserNode, buf: Float32Array<ArrayBuffer>): number {
+  analyser.getFloatTimeDomainData(buf);
+  let mean = 0;
+  for (let i = 0; i < buf.length; i++) mean += buf[i];
+  mean /= buf.length;
   let sum = 0;
-  for (let i = 0; i < data.length; i++) {
-    const v = (data[i] - 128) / 128;
+  for (let i = 0; i < buf.length; i++) {
+    const v = buf[i] - mean;
     sum += v * v;
   }
-  return Math.sqrt(sum / data.length);
+  return Math.sqrt(sum / buf.length);
 }
+
+// Display level for the HUD core/bars: raw RMS is tiny on a quiet mic, so
+// scale it up (clamped) so the visuals actually move.
+const toDisplayLevel = (raw: number) => Math.min(1, raw * 12);
 
 function isQuotaError(message: string | null | undefined): boolean {
   if (!message) return false;
@@ -116,23 +129,15 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
   // in start()); thresholds below are derived from it instead of fixed
   // constants, so a noisier room or a hotter mic gain doesn't just silently
   // never trigger speech detection.
-  const noiseFloorRef = useRef(0.01);
-  // Additive margin over the floor rather than a multiplier: on a quiet
-  // mic the floor is near zero and multiplying it changes nothing (exactly
-  // the bug just fixed), whereas a fixed margin still raises the bar in an
-  // actually noisy room.
+  const noiseFloorRef = useRef(0.001);
   const speechThreshold = useCallback(
-    () => Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current + 0.008),
+    () => Math.max(MIN_SPEECH_RMS, noiseFloorRef.current * SPEECH_OVER_FLOOR),
     [],
   );
-  // Deliberately a plain constant, not floor-derived: an adaptive silence
-  // threshold went through two revisions and still wasn't reliably below
-  // the user's actual "gone quiet" level (residual mic self-noise/AGC
-  // settling can sit above the calibrated floor), which is why turns kept
-  // running out to MAX_TURN_MS instead of cutting. A fixed value tuned to
-  // real measured numbers is more predictable to reason about and to
-  // adjust further than compounding multipliers on a 400ms sample.
-  const silenceThreshold = useCallback(() => SILENCE_RMS_THRESHOLD, []);
+  const silenceThreshold = useCallback(
+    () => Math.max(MIN_SILENCE_RMS, noiseFloorRef.current * SILENCE_OVER_FLOOR),
+    [],
+  );
 
   useEffect(() => {
     const Ctor = (window as any).MediaRecorder;
@@ -185,7 +190,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
     analyser.fftSize = 512;
     source.connect(analyser);
     source.connect(ctx.destination); // keep audio audible through this graph
-    const data = new Uint8Array(analyser.fftSize);
+    const data = new Float32Array(analyser.fftSize);
 
     const tick = () => {
       if (!activeRef.current || useTtsStore.getState().state !== 'speaking') {
@@ -194,8 +199,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         source.disconnect();
         return;
       }
-      analyser.getByteTimeDomainData(data);
-      useCallStore.getState().setLevel(Math.min(1, rms(data) * 4));
+      useCallStore.getState().setLevel(toDisplayLevel(readRms(analyser, data)));
       rafRef.current = requestAnimationFrame(tick);
     };
     tick();
@@ -231,12 +235,11 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
       const analyser = analyserRef.current;
       if (!analyser) return; // no mic graph — fall back to natural end only
-      const data = new Uint8Array(analyser.fftSize);
+      const data = new Float32Array(analyser.fftSize);
       let speechFrames = 0;
       const tick = () => {
         if (settled || !activeRef.current) return;
-        analyser.getByteTimeDomainData(data);
-        if (rms(data) * 4 > speechThreshold()) {
+        if (readRms(analyser, data) > speechThreshold()) {
           speechFrames += 1;
           if (speechFrames > 2) {
             console.log('[jarvis-call] barge-in detected — cutting Jarvis off');
@@ -283,13 +286,15 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       let hasSpoken = false;
       let silenceSince: number | null = null;
       const startedAt = Date.now();
-      const data = new Uint8Array(analyser.fftSize);
+      const data = new Float32Array(analyser.fftSize);
       const speechCutoff = speechThreshold();
       const silenceCutoff = silenceThreshold();
       let lastLevelLogAt = 0;
+      let peakLevel = 0;
       console.log('[jarvis-call] recording turn — thresholds', {
-        speech: speechCutoff.toFixed(4),
-        silence: silenceCutoff.toFixed(4),
+        speech: speechCutoff.toFixed(5),
+        floor: noiseFloorRef.current.toFixed(5),
+        silence: silenceCutoff.toFixed(5),
       });
 
       const tick = () => {
@@ -297,14 +302,14 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
           if (recorder.state !== 'inactive') recorder.stop();
           return;
         }
-        analyser.getByteTimeDomainData(data);
-        const level = Math.min(1, rms(data) * 4);
-        useCallStore.getState().setLevel(level);
+        const level = readRms(analyser, data);
+        if (level > peakLevel) peakLevel = level;
+        useCallStore.getState().setLevel(toDisplayLevel(level));
         const now = Date.now();
 
         if (now - lastLevelLogAt > 500) {
           lastLevelLogAt = now;
-          console.log('[jarvis-call] level', level.toFixed(4), hasSpoken ? '(speaking)' : '(waiting for speech)');
+          console.log('[jarvis-call] level', level.toFixed(5), 'peak', peakLevel.toFixed(5), hasSpoken ? '(speaking)' : '(waiting for speech)');
         }
 
         if (level > speechCutoff) {
@@ -312,7 +317,10 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
           hasSpoken = true;
           gotSpeech = true;
           silenceSince = null;
-        } else if (hasSpoken && level < silenceCutoff) {
+        } else if (
+          hasSpoken &&
+          level < Math.min(speechCutoff * 0.9, Math.max(silenceCutoff, peakLevel * SILENCE_PEAK_FRACTION))
+        ) {
           if (silenceSince === null) silenceSince = now;
           else if (now - silenceSince > SILENCE_HOLD_MS) {
             console.log('[jarvis-call] silence detected -> sending to STT');
@@ -509,18 +517,19 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       // real speech, so the speech/silence thresholds adapt instead of
       // relying on a constant tuned on someone else's machine.
       await new Promise<void>((resolve) => {
-        const data = new Uint8Array(analyser.fftSize);
+        const data = new Float32Array(analyser.fftSize);
         const samples: number[] = [];
         const startedAt = performance.now();
         const sample = () => {
-          analyser.getByteTimeDomainData(data);
-          samples.push(rms(data));
-          if (performance.now() - startedAt < NOISE_FLOOR_CALIBRATION_MS) {
+          const elapsed = performance.now() - startedAt;
+          const level = readRms(analyser, data);
+          if (elapsed >= NOISE_FLOOR_WARMUP_MS) samples.push(level);
+          if (elapsed < NOISE_FLOOR_WARMUP_MS + NOISE_FLOOR_CALIBRATION_MS) {
             requestAnimationFrame(sample);
           } else {
             const avg = samples.reduce((a, b) => a + b, 0) / Math.max(1, samples.length);
             noiseFloorRef.current = avg;
-            console.log('[jarvis-call] noise floor calibrated:', avg.toFixed(4));
+            console.log('[jarvis-call] noise floor calibrated:', avg.toFixed(5), '(stay quiet during this ~1s)');
             resolve();
           }
         };
