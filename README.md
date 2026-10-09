@@ -14,9 +14,11 @@ y reuniones (con Google Meet) por voz o por chat.
   mientras estás en la llamada.
 - **Palabra de activación** ("Jarvis") opcional, detectada en el navegador
   sin coste de API.
-- **Voz**: el reconocimiento (STT) corre en local con faster-whisper (sin
-  cuota de API ni coste); la síntesis (TTS) usa la voz nativa de Gemini, con
-  la voz del navegador como respaldo si se agota la cuota gratuita.
+- **Voz 100 % local**: el reconocimiento (STT) usa faster-whisper y la
+  síntesis (TTS) usa Kokoro (voz `em_alex`, español). Sin cuota de API ni
+  coste; Gemini solo se usa para pensar. Si prefieres la voz de Gemini,
+  cambia `tts_backend` a `gemini_tts`; la voz del navegador queda como
+  respaldo si ese servicio se queda sin cuota.
 - **Gmail**: buscar correos, leer hilos, listar no leídos, enviar correos.
 - **Google Calendar**: ver eventos de hoy, buscar eventos, próxima reunión,
   crear eventos con enlace de Google Meet.
@@ -63,7 +65,10 @@ cd ..
 2. (Primera vez) revisa que `~/.openjarvis/config.toml` tenga Gemini como
    motor por defecto y, en `[speech]`, `backend = "faster-whisper"` con
    `model = "base"`, `device = "cpu"`, `compute_type = "int8"` (el modelo se
-   descarga solo la primera vez, ~150 MB). Si no existe, `jarvis` lo crea con valores por defecto
+   descarga solo la primera vez, ~150 MB) y `tts_backend = "kokoro"` con
+   `voice_id = "em_alex"`. Kokoro requiere `torch` (versión CPU) y `kokoro`:
+   `uv pip install torch --index-url https://download.pytorch.org/whl/cpu`
+   y `uv pip install kokoro pip`. Si no existe, `jarvis` lo crea con valores por defecto
    la primera vez que arrancas.
 
 ## Arranque
