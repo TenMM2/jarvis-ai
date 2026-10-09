@@ -1,16 +1,10 @@
 name: Bash tests
 
+# Manual-only: the automatic triggers (push, pull_request, schedule) were
+# removed because they burned the free GitHub Actions minutes. Run this from
+# the Actions tab ("Run workflow") when you actually need it.
 on:
-  pull_request:
-    paths:
-      - 'scripts/install/**'
-      - 'tests/install/bash/**'
-      - '.github/workflows/bash-tests.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/install/**'
-      - 'tests/install/bash/**'
+  workflow_dispatch:
 
 jobs:
   bats:

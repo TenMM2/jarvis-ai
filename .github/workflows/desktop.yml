@@ -1,21 +1,16 @@
 name: Desktop Build & Release
 
+# Manual-only: the automatic triggers (push, pull_request, schedule) were
+# removed because they burned the free GitHub Actions minutes. Run this from
+# the Actions tab ("Run workflow") when you actually need it.
 on:
-  push:
-    tags:
-      - 'v*'
-      - 'desktop-v*'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/desktop.yml'
   workflow_dispatch:
     inputs:
       tag:
         description: 'Tag to build (e.g. v1.0.2.dev500). If set, autotag dispatches use this. github.ref still controls the checkout.'
         required: false
         type: string
+
 
 concurrency:
   # All rolling builds publish to the same desktop-edge release. Serialize
