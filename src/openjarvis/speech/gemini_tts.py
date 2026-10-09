@@ -28,6 +28,20 @@ _VOICES = [
 ]
 
 
+# Free-tier quota is tracked *per model*, so when one TTS model returns 429
+# the next one usually still has requests left. Order: lightest first.
+_TTS_MODEL_CHAIN = (
+    "gemini-3.8-flash-lite-tts",
+    "gemini-3.1-flash-tts-preview",
+    "gemini-3.8-flash-tts",
+)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "429" in text or "RESOURCE_EXHAUSTED" in text
+
+
 def _wav_sample_rate(wav_bytes: bytes) -> int:
     try:
         with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
@@ -42,11 +56,16 @@ class GeminiTTSBackend(TTSBackend):
 
     backend_id = "gemini_tts"
 
-    def __init__(self, *, api_key: str = "", model: str = "gemini-3.8-flash-tts") -> None:
+    def __init__(self, *, api_key: str = "", model: str = "") -> None:
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get(
             "GOOGLE_API_KEY", ""
         )
-        self._model = model
+        # An explicit model (arg or GEMINI_TTS_MODEL) is tried first, then the
+        # rest of the chain as quota fallbacks.
+        preferred = model or os.environ.get("GEMINI_TTS_MODEL", "")
+        self._models = [preferred] if preferred else []
+        self._models += [m for m in _TTS_MODEL_CHAIN if m != preferred]
+        self._model = self._models[0]
         self._client = None
         if self._api_key and genai is not None:
             self._client = genai.Client(api_key=self._api_key)
@@ -63,22 +82,37 @@ class GeminiTTSBackend(TTSBackend):
             raise RuntimeError("Gemini client not initialized (missing API key?)")
 
         voice = voice_id or "Kore"
-        response = self._client.models.generate_content(
-            model=self._model,
-            contents=text,
-            config=genai_types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=genai_types.SpeechConfig(
-                    voice_config=genai_types.VoiceConfig(
-                        prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
-                            voice_name=voice
-                        )
+        config = genai_types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=genai_types.SpeechConfig(
+                voice_config=genai_types.VoiceConfig(
+                    prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
+                        voice_name=voice
                     )
-                ),
+                )
             ),
         )
-        part = response.candidates[0].content.parts[0]
-        audio_bytes = part.inline_data.data
+        last_exc: Exception | None = None
+        audio_bytes = b""
+        # Start from the last model that worked so a model that is out of
+        # quota isn't retried (and waited on) at the start of every turn.
+        order = self._models[self._models.index(self._model):] + self._models[: self._models.index(self._model)]
+        for model in order:
+            try:
+                response = self._client.models.generate_content(
+                    model=model, contents=text, config=config
+                )
+                part = response.candidates[0].content.parts[0]
+                audio_bytes = part.inline_data.data
+                self._model = model
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if not _is_quota_error(exc):
+                    raise
+        else:
+            assert last_exc is not None
+            raise last_exc
 
         return TTSResult(
             audio=audio_bytes,

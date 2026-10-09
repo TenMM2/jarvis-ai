@@ -31,12 +31,14 @@ class GeminiSpeechBackend(SpeechBackend):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-3.8-flash",
+        model: str = "",
     ) -> None:
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get(
             "GOOGLE_API_KEY", ""
         )
-        self._model = model
+        # gemini-3.8-flash took ~6s per step; the lite model is far quicker and
+        # has its own free-tier quota bucket. Override with GEMINI_STT_MODEL.
+        self._model = model or os.environ.get("GEMINI_STT_MODEL", "gemini-3.5-flash-lite")
         self._client = None
         if self._api_key and genai is not None:
             self._client = genai.Client(api_key=self._api_key)

@@ -16,7 +16,18 @@ const MIN_SPEECH_RMS = 0.0025;
 const MIN_SILENCE_RMS = 0.0012;
 const SPEECH_OVER_FLOOR = 3.5; // speech starts at floor * this
 const SILENCE_OVER_FLOOR = 1.8; // "quiet again" is floor * this...
-const SILENCE_PEAK_FRACTION = 0.2; // ...or 20% of this turn's loudest moment
+const SILENCE_PEAK_FRACTION = 0.2;
+// Barge-in has to tell the user's voice from Jarvis's own voice coming back
+// through the speakers. 0.0375 raw RMS is the "0.15" level from the review
+// (that figure was on the old rms*4 scale), and it must also clear 3x the
+// normal speech threshold, be sustained for >10 frames, and not start
+// until 700ms into the reply (the loudest, most echo-prone moment).
+const BARGE_IN_MIN_RMS = 0.0375;
+const BARGE_IN_SPEECH_MULTIPLIER = 3;
+const BARGE_IN_FRAMES = 10;
+const BARGE_IN_GRACE_MS = 700;
+// Let the speaker tail die out before reopening the mic after Jarvis talks.
+const POST_SPEECH_PAUSE_MS = 400; // ...or 20% of this turn's loudest moment
 const SILENCE_HOLD_MS = 800;
 const STARTUP_SILENCE_MS = 7000;
 // Lowered from 15s: a real turn that reaches this is almost always a silence
@@ -34,7 +45,12 @@ export const JARVIS_CALL_PERSONA =
   'resolutivo — nunca más de 2 frases, sin rodeos ni disculpas ' +
   'innecesarias. Cuanto más corta la respuesta, antes se puede reproducir ' +
   'en voz. Tu respuesta se va a leer en voz alta, así que evita listas, ' +
-  'markdown o texto que no suene natural al hablarlo.';
+  'markdown o texto que no suene natural al hablarlo. ' +
+  'REGLA DE VERACIDAD: nunca afirmes haber hecho algo (enviar, borrar, ' +
+  'crear, mover, programar...) si no lo has ejecutado con una herramienta ' +
+  'y has recibido su resultado. Si no tienes una herramienta para lo que ' +
+  'te piden (por ejemplo, borrar correos), dilo con claridad en vez de ' +
+  'fingir que está hecho.';
 
 // Raw RMS of the analyser's float waveform with the DC offset removed. The
 // byte variant (getByteTimeDomainData) only has 1/128 resolution, so on a
@@ -103,46 +119,41 @@ async function normalizeTurn(blob: Blob, ctx: AudioContext | null): Promise<{ bl
   }
 }
 
+
+// Virtual/loopback inputs (noise-cancelling suites, audio routers...) are
+// frequently what Windows reports as the *default* device, and they are
+// often silent unless their own app is running. Match them by label.
+const VIRTUAL_MIC_RE = /nvidia broadcast|virtual|voicemeeter|vb-audio|cable (input|output)|obs|stereo mix|krisp|steam streaming|elgato wave link/i;
+
+async function pickRealMicIfVirtual(stream: MediaStream, processing: MediaTrackConstraints): Promise<MediaStream> {
+  const label = stream.getAudioTracks()[0]?.label ?? '';
+  if (!VIRTUAL_MIC_RE.test(label)) return stream;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const real = devices.find(
+      (d) =>
+        d.kind === 'audioinput' &&
+        d.deviceId !== 'default' &&
+        d.deviceId !== 'communications' &&
+        d.label &&
+        !VIRTUAL_MIC_RE.test(d.label),
+    );
+    if (!real) return stream;
+    console.log('[jarvis-call] default mic looks virtual (' + label + ') — switching to', real.label);
+    const better = await navigator.mediaDevices.getUserMedia({
+      audio: { ...processing, deviceId: { exact: real.deviceId } },
+    });
+    stream.getTracks().forEach((t) => t.stop());
+    return better;
+  } catch (err) {
+    console.warn('[jarvis-call] could not switch away from virtual mic', err);
+    return stream;
+  }
+}
+
 function isQuotaError(message: string | null | undefined): boolean {
   if (!message) return false;
   return /429|RESOURCE_EXHAUSTED|quota/i.test(message);
-}
-
-// Last-resort TTS when Gemini's free-tier quota (20 requests on the plan
-// this was built against) is exhausted mid-call: the browser's own
-// SpeechSynthesis is free, has no request limit, and keeps the call usable
-// in a pinch — lower voice quality, but better than going silent entirely.
-// Never used as the default path; only on a detected quota error.
-function speakWithBrowserFallback(text: string): Promise<void> {
-  return new Promise((resolve) => {
-    if (!('speechSynthesis' in window)) {
-      resolve();
-      return;
-    }
-    const synth = window.speechSynthesis;
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'es-ES';
-
-    const pickVoiceAndSpeak = () => {
-      const voices = synth.getVoices();
-      const esVoice = voices.find((v) => v.lang?.toLowerCase().startsWith('es'));
-      if (esVoice) utter.voice = esVoice;
-      utter.onend = () => resolve();
-      utter.onerror = () => resolve();
-      synth.speak(utter);
-    };
-
-    // If the voice list hasn't loaded yet, speak() can silently drop the
-    // utterance — wait for it once, same as any other voices-changed gotcha.
-    if (synth.getVoices().length > 0) {
-      pickVoiceAndSpeak();
-    } else {
-      synth.onvoiceschanged = () => {
-        synth.onvoiceschanged = null;
-        pickVoiceAndSpeak();
-      };
-    }
-  });
 }
 
 /**
@@ -283,12 +294,17 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       if (!analyser) return; // no mic graph — fall back to natural end only
       const data = new Float32Array(analyser.fftSize);
       let speechFrames = 0;
+      const startedAt = performance.now();
+      const bargeCutoff = Math.max(BARGE_IN_MIN_RMS, speechThreshold() * BARGE_IN_SPEECH_MULTIPLIER);
       const tick = () => {
         if (settled || !activeRef.current) return;
-        if (readRms(analyser, data) > speechThreshold()) {
+        const level = readRms(analyser, data);
+        if (performance.now() - startedAt < BARGE_IN_GRACE_MS) {
+          speechFrames = 0;
+        } else if (level > bargeCutoff) {
           speechFrames += 1;
-          if (speechFrames > 2) {
-            console.log('[jarvis-call] barge-in detected — cutting Jarvis off');
+          if (speechFrames > BARGE_IN_FRAMES) {
+            console.log('[jarvis-call] barge-in detected — cutting Jarvis off', { level: level.toFixed(4), cutoff: bargeCutoff.toFixed(4) });
             finish('bargein');
             return;
           }
@@ -473,14 +489,6 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       const ttsAfterSpeak = useTtsStore.getState();
       if (ttsAfterSpeak.state !== 'speaking') {
         console.error('[jarvis-call] TTS playback failed', ttsAfterSpeak.error);
-        if (isQuotaError(ttsAfterSpeak.error)) {
-          console.log('[jarvis-call] Gemini TTS quota exhausted — falling back to browser speechSynthesis');
-          useCallStore.getState().setError('Gemini voice quota exceeded — using browser voice for now');
-          useCallStore.getState().setState('speaking');
-          await speakWithBrowserFallback(reply);
-          useCallStore.getState().setState('idle'); // re-enter loop -> back to 'listening'
-          continue;
-        }
         useCallStore.getState().setError(
           ttsAfterSpeak.error ? `Voice playback failed: ${ttsAfterSpeak.error}` : 'Voice playback failed',
         );
@@ -494,6 +502,10 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       if (result === 'bargein') {
         useTtsStore.getState().stop(); // cut Jarvis off immediately
         useCallStore.getState().setLevel(0);
+      } else {
+        // Don't reopen the mic on the speaker's tail — it would be heard as
+        // the start of a new user turn.
+        await new Promise((r) => setTimeout(r, POST_SPEECH_PAUSE_MS));
       }
       // Either way, loop back to 'listening' next iteration — on a natural
       // end that's the normal turn-taking; on a barge-in it's the point of
@@ -533,6 +545,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         console.warn('[jarvis-call] saved microphone unavailable, using default');
         stream = await navigator.mediaDevices.getUserMedia({ audio: processing });
       }
+      if (!wantedDevice) stream = await pickRealMicIfVirtual(stream, processing);
       console.log('[jarvis-call] microphone permission granted');
       useCallStore.getState().setMicLabel(stream.getAudioTracks()[0]?.label ?? '');
       for (const track of stream.getAudioTracks()) {
