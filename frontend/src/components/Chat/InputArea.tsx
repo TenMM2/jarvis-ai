@@ -14,26 +14,10 @@ import { MicButton } from './MicButton';
 import { JarvisCore } from './JarvisCore';
 import { useSpeech } from '../../hooks/useSpeech';
 import { useWakeWord } from '../../hooks/useWakeWord';
+import { useCallMode, JARVIS_CALL_PERSONA } from '../../hooks/useCallMode';
 import { useTtsStore } from '../../lib/tts';
+import { useCallStore } from '../../lib/call';
 
-const WAKE_GREETING = 'Hola, soy Jarvis. ¿Qué tareas tenemos hoy?';
-// No server-side silence detection exists for the browser mic path (unlike
-// the CLI's record_until_silence), so a hands-free turn listens for a fixed
-// window rather than waiting indefinitely for the user to stop talking.
-const WAKE_LISTEN_WINDOW_MS = 6000;
-
-/** Resolves once TTS playback (if any) returns to idle. */
-function waitForTtsIdle(): Promise<void> {
-  if (useTtsStore.getState().state === 'idle') return Promise.resolve();
-  return new Promise((resolve) => {
-    const unsubscribe = useTtsStore.subscribe((s) => {
-      if (s.state === 'idle') {
-        unsubscribe();
-        resolve();
-      }
-    });
-  });
-}
 import type {
   ChatMessage,
   MessageTelemetry,
@@ -194,16 +178,19 @@ export function InputArea() {
     resetStream();
   }, [resetStream]);
 
-  const sendMessage = useCallback(async (overrideText?: string) => {
-    // overrideText lets the wake-word flow send a just-transcribed utterance
-    // without round-tripping through setInput first — setState is async, so
-    // sendMessage() called right after setInput(text) would still read the
-    // previous render's `input`.
+  const sendMessage = useCallback(async (
+    overrideText?: string,
+    opts?: { systemPrompt?: string },
+  ): Promise<string> => {
+    // overrideText lets the wake-word/call flows send a just-transcribed
+    // utterance without round-tripping through setInput first — setState is
+    // async, so sendMessage() called right after setInput(text) would still
+    // read the previous render's `input`.
     const content = (overrideText ?? input).trim();
-    if (!content || streamState.isStreaming) return;
+    if (!content || streamState.isStreaming) return '';
     if (!selectedModel) {
       toast.error('Pick a model first (⌘K)');
-      return;
+      return '';
     }
 
     setInput('');
@@ -223,10 +210,17 @@ export function InputArea() {
 
     // Build API messages before adding assistant placeholder
     const currentMessages = useAppStore.getState().messages;
-    const apiMessages = currentMessages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    const apiMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] =
+      currentMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+    // Call mode prepends a persona instruction for just this request — it's
+    // never added to the visible transcript, so a normal typed/spoken
+    // message right after a call still gets the default assistant voice.
+    if (opts?.systemPrompt) {
+      apiMessages.unshift({ role: 'system', content: opts.systemPrompt });
+    }
 
     const assistantMsg: ChatMessage = {
       id: generateId(),
@@ -566,6 +560,7 @@ export function InputArea() {
           .catch(() => {});
       }
     }
+    return accumulatedContent;
   }, [
     input,
     activeId,
@@ -585,37 +580,39 @@ export function InputArea() {
   const voiceOutputEnabled = useAppStore((s) => s.settings.voiceOutputEnabled);
   const wakeWordEnabled = wakeWordSetting && speechEnabled && voiceOutputEnabled && speechAvailable;
 
-  const handleWake = useCallback(async () => {
-    // A turn already in flight (manual mic, or an overlapping wake trigger)
-    // — ignore rather than queue, the user can just say "Jarvis" again.
-    if (streamState.isStreaming || speechState !== 'idle') return;
-    wakeWordRef.current?.pause();
-    try {
-      await useTtsStore.getState().speak('wake-greeting', WAKE_GREETING);
-      await waitForTtsIdle();
-      await startRecording();
-      await new Promise((r) => setTimeout(r, WAKE_LISTEN_WINDOW_MS));
-      const text = await stopRecording().catch(() => '');
-      if (text) {
-        await sendMessage(text);
-        // Give the reply-autoplay effect (in ChatArea) a beat to kick in
-        // before checking whether playback is done — right after
-        // sendMessage resolves, tts is still idle if autoplay hasn't
-        // started yet, and waitForTtsIdle would return immediately.
-        await new Promise((r) => setTimeout(r, 400));
-        await waitForTtsIdle();
-      }
-    } finally {
-      wakeWordRef.current?.resume();
-    }
-  }, [streamState.isStreaming, speechState, startRecording, stopRecording, sendMessage]);
+  // Saying "Jarvis" starts a full hands-free call (continuous listen →
+  // reply → listen loop — see useCallMode) rather than a single exchange,
+  // so there's one turn-taking engine for both the voice trigger and the
+  // call button.
+  const handleWake = useCallback(() => {
+    if (streamState.isStreaming || useCallStore.getState().isActive) return;
+    useCallStore.getState().controls.start();
+  }, [streamState.isStreaming]);
 
-  // useWakeWord needs `pause`/`resume` inside handleWake, and handleWake is
-  // wakeWord's own onWake callback — a ref breaks that cycle without forcing
-  // the hook to re-subscribe its SpeechRecognition instance every render.
-  const wakeWordRef = useRef<{ pause: () => void; resume: () => void } | null>(null);
   const wakeWord = useWakeWord('jarvis', handleWake, wakeWordEnabled);
-  wakeWordRef.current = wakeWord;
+
+  const sendTurn = useCallback(
+    (text: string) => sendMessage(text, { systemPrompt: JARVIS_CALL_PERSONA }),
+    [sendMessage],
+  );
+  useCallMode(sendTurn);
+
+  // The wake-word listener and a hands-free call both want the mic; pause
+  // word-spotting for the duration of the call so they don't fight over it,
+  // and go back to listening for "Jarvis" once the call ends.
+  const callActive = useCallStore((s) => s.isActive);
+  const callLevel = useCallStore((s) => s.level);
+  const callState = useCallStore((s) => s.state);
+  const callSupported = useCallStore((s) => s.supported);
+  const prevCallActiveRef = useRef(false);
+  useEffect(() => {
+    if (callActive) {
+      wakeWord.pause();
+    } else if (prevCallActiveRef.current) {
+      wakeWord.resume();
+    }
+    prevCallActiveRef.current = callActive;
+  }, [callActive, wakeWord]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -658,16 +655,27 @@ export function InputArea() {
           </div>
         )}
       </div>
-      {speechEnabled && (
-        <div className="flex items-center justify-center mb-1" title={
-          wakeWordEnabled
-            ? wakeWord.supported ? 'Wake word armed — say "Jarvis"' : 'Wake word not supported in this browser'
-            : undefined
-        }>
+      {speechEnabled && voiceOutputEnabled && (
+        <div
+          className="flex items-center justify-center mb-1"
+          title={
+            callSupported
+              ? callActive ? 'End call' : 'Start a hands-free call with Jarvis'
+              : 'Call mode needs microphone support in this browser'
+          }
+        >
           <JarvisCore
             size={28}
+            level={callLevel}
+            callActive={callActive}
+            onClick={
+              callSupported
+                ? () => (callActive ? useCallStore.getState().controls.end() : useCallStore.getState().controls.start())
+                : undefined
+            }
             state={
-              speechState === 'recording' ? 'listening'
+              callActive ? callState
+              : speechState === 'recording' ? 'listening'
               : speechState === 'transcribing' ? 'thinking'
               : ttsCoreState === 'speaking' || ttsCoreState === 'loading' ? 'speaking'
               : isCurrentChatStreaming ? 'thinking'

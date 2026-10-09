@@ -153,6 +153,15 @@ export const useTtsStore = create<TtsStore>((set, get) => ({
   },
 }));
 
+/**
+ * The HTMLAudioElement currently playing a reply, if any. Call mode taps an
+ * AnalyserNode onto this to drive the core's "speaking" visual from the
+ * actual voice output rather than a synthetic animation.
+ */
+export function getActiveAudioElement(): HTMLAudioElement | null {
+  return audio;
+}
+
 /** Test seam: reset module-level playback handles between cases. */
 export function __resetTtsForTests(): void {
   teardown();

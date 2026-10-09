@@ -1,8 +1,20 @@
+import { Phone, PhoneOff } from 'lucide-react';
+
 export type JarvisCoreState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 interface JarvisCoreProps {
   state: JarvisCoreState;
   size?: number;
+  /**
+   * Live 0..1 microphone amplitude. When provided while `state ===
+   * 'listening'`, it drives the core's scale/brightness directly instead of
+   * the fixed-rhythm CSS pulse — the call button reacting to how loud you
+   * are actually talking, not a canned animation.
+   */
+  level?: number;
+  /** Renders a phone icon and makes the core itself the call start/hang-up button. */
+  onClick?: () => void;
+  callActive?: boolean;
 }
 
 // One rhythm per state: idle breathes slowly, listening pulses attentively,
@@ -18,17 +30,22 @@ const ANIMATION_BY_STATE: Record<JarvisCoreState, string> = {
  * The glowing blue core — this app's Jarvis-style visual identity. Reused at
  * two sizes: large in the empty-chat hero, small inline next to the mic
  * button, both driven by the same state so the whole UI reads as one thing
- * listening/thinking/speaking rather than two separate indicators.
+ * listening/thinking/speaking rather than two separate indicators. With
+ * `onClick` it doubles as the call button, matching the "press the core to
+ * start/end the call" concept.
  */
-export function JarvisCore({ state, size = 80 }: JarvisCoreProps) {
+export function JarvisCore({ state, size = 80, level, onClick, callActive }: JarvisCoreProps) {
   const ringSize = size * 1.45;
+  const liveReactive = state === 'listening' && typeof level === 'number';
+  const coreScale = liveReactive ? 1 + Math.min(level!, 1) * 0.35 : undefined;
+  const coreBrightness = liveReactive ? 1 + Math.min(level!, 1) * 0.6 : undefined;
 
-  return (
+  const core = (
     <div
       className="relative flex items-center justify-center shrink-0"
       style={{ width: ringSize, height: ringSize }}
-      role="img"
-      aria-label={`Jarvis core: ${state}`}
+      role={onClick ? 'button' : 'img'}
+      aria-label={onClick ? (callActive ? 'End call with Jarvis' : 'Start call with Jarvis') : `Jarvis core: ${state}`}
     >
       {state === 'thinking' && (
         <div
@@ -51,9 +68,20 @@ export function JarvisCore({ state, size = 80 }: JarvisCoreProps) {
           background:
             'radial-gradient(circle at 35% 30%, rgba(255,255,255,0.35), var(--color-accent) 55%, var(--color-accent-hover) 100%)',
           boxShadow: `0 0 ${size * 0.35}px ${size * 0.12}px var(--color-accent-glow)`,
-          animation: ANIMATION_BY_STATE[state],
+          animation: liveReactive ? 'none' : ANIMATION_BY_STATE[state],
+          transform: liveReactive ? `scale(${coreScale})` : undefined,
+          filter: liveReactive ? `brightness(${coreBrightness})` : undefined,
+          transition: liveReactive ? 'transform 60ms linear, filter 60ms linear' : undefined,
         }}
       />
+      {onClick && (
+        <div
+          className="absolute inset-0 flex items-center justify-center pointer-events-none"
+          style={{ color: 'white' }}
+        >
+          {callActive ? <PhoneOff size={size * 0.32} /> : <Phone size={size * 0.32} />}
+        </div>
+      )}
       <style>{`
         @keyframes jarvis-core-breathe {
           0%, 100% { transform: scale(1); filter: brightness(1); }
@@ -73,5 +101,18 @@ export function JarvisCore({ state, size = 80 }: JarvisCoreProps) {
         }
       `}</style>
     </div>
+  );
+
+  if (!onClick) return core;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="cursor-pointer bg-transparent border-none p-0"
+      title={callActive ? 'End call' : 'Start call with Jarvis'}
+    >
+      {core}
+    </button>
   );
 }

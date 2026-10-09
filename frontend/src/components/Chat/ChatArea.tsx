@@ -6,6 +6,7 @@ import { StreamingDots } from './StreamingDots';
 import { JarvisCore } from './JarvisCore';
 import { useAppStore } from '../../lib/store';
 import { shouldAutoplayFinishedReply, useTtsStore } from '../../lib/tts';
+import { useCallStore } from '../../lib/call';
 import { stripThinkTags } from '../../lib/message-text';
 import { PanelRightOpen, PanelRightClose, Database, MessageSquare, X } from 'lucide-react';
 import { listConnectors } from '../../lib/connectors-api';
@@ -30,6 +31,10 @@ export function ChatArea() {
   const lastScrollTop = useRef(0);
   const isCurrentChatStreaming = streamState.isStreaming && streamState.conversationId === activeId;
   const heroTtsState = useTtsStore((s) => s.state);
+  const callActive = useCallStore((s) => s.isActive);
+  const callLevel = useCallStore((s) => s.level);
+  const callState = useCallStore((s) => s.state);
+  const callSupported = useCallStore((s) => s.supported);
 
   // Autoplay: speak a reply once it is finished, never while it streams -- a
   // partial sentence would be synthesized and then cut off by the next chunk.
@@ -187,13 +192,26 @@ export function ChatArea() {
             <div className="mb-4">
               <JarvisCore
                 size={64}
+                level={callLevel}
+                callActive={callActive}
+                onClick={
+                  callSupported
+                    ? () => (callActive ? useCallStore.getState().controls.end() : useCallStore.getState().controls.start())
+                    : undefined
+                }
                 state={
-                  isCurrentChatStreaming ? 'thinking'
+                  callActive ? callState
+                  : isCurrentChatStreaming ? 'thinking'
                   : heroTtsState === 'speaking' || heroTtsState === 'loading' ? 'speaking'
                   : 'idle'
                 }
               />
             </div>
+            {callSupported && (
+              <p className="text-xs mb-2" style={{ color: 'var(--color-text-tertiary)' }}>
+                {callActive ? 'On a call — tap the core to hang up' : 'Tap the core for a hands-free call'}
+              </p>
+            )}
             <h2 className="text-xl font-semibold mb-2" style={{ color: 'var(--color-text)' }}>
               {getGreeting()}
             </h2>
