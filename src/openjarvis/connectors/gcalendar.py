@@ -7,6 +7,7 @@ to make them trivially mockable in tests.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -79,6 +80,18 @@ def _gcal_api_event_patch(
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def _with_utc_offset(timestamp: str) -> str:
+    """Ensure *timestamp* carries a UTC offset, defaulting to the local one.
+
+    The Calendar API rejects a ``dateTime`` with neither a trailing ``Z``
+    nor a ``+HH:MM``/``-HH:MM`` offset ("Missing time zone definition").
+    """
+    if timestamp.endswith("Z") or re.search(r"[+-]\d{2}:\d{2}$", timestamp):
+        return timestamp
+    offset = datetime.now().astimezone().strftime("%z")  # e.g. "+0200"
+    return f"{timestamp}{offset[:3]}:{offset[3:]}"
 
 
 def _gcal_api_event_insert(
@@ -513,16 +526,19 @@ class GCalendarConnector(BaseConnector):
         """Create a calendar event, optionally with a Google Meet link.
 
         ``start``/``end`` are RFC3339 timestamps (e.g.
-        ``"2026-10-09T10:00:00-05:00"``). Returns the created event resource,
-        which includes ``htmlLink`` and (when ``add_meet`` is set)
-        ``hangoutLink``.
+        ``"2026-10-09T10:00:00-05:00"``). A timestamp with no UTC offset
+        (common when an LLM-generated argument omits it) is treated as local
+        time and given the machine's own offset — the Calendar API otherwise
+        rejects it outright with "Missing time zone definition". Returns the
+        created event resource, which includes ``htmlLink`` and (when
+        ``add_meet`` is set) ``hangoutLink``.
         """
         token = self._get_token()
         body: Dict[str, Any] = {
             "summary": summary,
             "description": description,
-            "start": {"dateTime": start},
-            "end": {"dateTime": end},
+            "start": {"dateTime": _with_utc_offset(start)},
+            "end": {"dateTime": _with_utc_offset(end)},
         }
         if attendees:
             body["attendees"] = [{"email": email} for email in attendees]
