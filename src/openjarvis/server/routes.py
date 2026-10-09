@@ -1103,6 +1103,31 @@ async def _handle_stream(
     )
 
 
+@router.get("/v1/cloud/key-status")
+async def cloud_key_status() -> dict[str, bool]:
+    """Which cloud provider API keys this server process currently has.
+
+    Mirrors the Tauri desktop app's `get_cloud_key_status` command so the
+    browser-based Cloud Models picker can show "Connected" for keys set via
+    the server environment (`.env` / `cloud-keys.env`), not just keys typed
+    into desktop secure storage. Only booleans are returned — never values.
+    """
+    from openjarvis.server.cloud_router import _load_keys
+
+    keys = _load_keys()
+    for name in (
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "MINIMAX_API_KEY",
+        "ATLASCLOUD_API_KEY",
+    ):
+        keys.setdefault(name, "")
+    return {name: bool(val) for name, val in keys.items()}
+
+
 @router.get("/v1/models")
 async def list_models(request: Request) -> ModelListResponse:
     """List selectable engine models for the installed-model picker.

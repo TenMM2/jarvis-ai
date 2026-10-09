@@ -12,7 +12,15 @@ import { CommandPalette } from './components/CommandPalette';
 import { SetupScreen } from './components/SetupScreen';
 import { Toaster } from './components/ui/sonner';
 import { useAppStore } from './lib/store';
-import { fetchModels, fetchServerInfo, fetchSavings, submitSavings, isTauri } from './lib/api';
+import { fetchModels, fetchServerInfo, fetchSavings, submitSavings, isTauri, getCloudKeyStatus } from './lib/api';
+
+// Keep in sync with the Google entry in CommandPalette.tsx's CLOUD_PROVIDERS.
+const DEFAULT_CLOUD_MODEL_BY_KEY: Record<string, string> = {
+  GEMINI_API_KEY: 'gemini-3.8-flash',
+  GOOGLE_API_KEY: 'gemini-3.8-flash',
+  ANTHROPIC_API_KEY: 'claude-sonnet-4-6',
+  OPENAI_API_KEY: 'gpt-4o-mini',
+};
 import { OptInModal } from './components/OptInModal';
 import { UpdateChecker } from './components/Desktop/UpdateChecker';
 import { track, hashId } from './lib/analytics';
@@ -72,6 +80,22 @@ export default function App() {
       })
       .catch(() => setModels([]))
       .finally(() => setModelsLoading(false));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-pick a cloud model if the server already has a key configured
+  // (e.g. GEMINI_API_KEY in .env) and nothing is selected yet. Without this,
+  // a user running the plain browser build — not the desktop app — would
+  // have to open the command palette and pick a model manually before the
+  // chat input or the call button would do anything.
+  useEffect(() => {
+    getCloudKeyStatus()
+      .then((status) => {
+        if (useAppStore.getState().selectedModel) return;
+        const connectedKey = Object.entries(status).find(([, set]) => set)?.[0];
+        const defaultModel = connectedKey && DEFAULT_CLOUD_MODEL_BY_KEY[connectedKey];
+        if (defaultModel) useAppStore.getState().setSelectedModel(defaultModel);
+      })
+      .catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch server info
