@@ -53,6 +53,12 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
   // with monitorPlaybackLevel's loop (both active while state === 'speaking')
   // and must not cancel each other via a shared ref.
   const bargeRafRef = useRef<number | null>(null);
+  // Manual override for recordTurn's current MediaRecorder — bound to the
+  // Space key while a call is active, per the "if silence detection doesn't
+  // fire, let me force it" fallback. Whatever was captured up to that point
+  // is treated as a complete, valid utterance even if it never crossed the
+  // speech threshold.
+  const forceStopRef = useRef<(() => void) | null>(null);
   const sendTurnRef = useRef(sendTurn);
   sendTurnRef.current = sendTurn;
   // Ambient noise floor measured fresh for each call (see calibrateNoiseFloor
@@ -74,6 +80,22 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
     if (!Ctor || !navigator.mediaDevices?.getUserMedia) {
       useCallStore.getState().setSupported(false);
     }
+  }, []);
+
+  // Manual fallback: press Space to force-send the current turn right now,
+  // in case background noise keeps the silence detector from ever firing on
+  // its own. Only active while a call is actually listening, and ignored
+  // while typing in any text field elsewhere in the app.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !activeRef.current || !forceStopRef.current) return;
+      const target = e.target as HTMLElement | null;
+      if (target && /^(input|textarea)$/i.test(target.tagName)) return;
+      e.preventDefault();
+      forceStopRef.current();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   const stopLevelLoop = useCallback(() => {
@@ -191,6 +213,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       };
       recorder.onstop = () => {
         stopLevelLoop();
+        forceStopRef.current = null;
         resolve(
           gotSpeech && chunks.length
             ? new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
@@ -255,6 +278,11 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       };
 
       recorder.start();
+      forceStopRef.current = () => {
+        console.log('[jarvis-call] manual force-send (Space) — sending whatever was captured');
+        gotSpeech = true;
+        if (recorder.state !== 'inactive') recorder.stop();
+      };
       tick();
     });
   }, [stopLevelLoop, speechThreshold, silenceThreshold]);
@@ -359,6 +387,25 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       streamRef.current = stream;
       const ctx = new AudioContext();
       audioCtxRef.current = ctx;
+      console.log('[jarvis-call] AudioContext state:', ctx.state);
+      if (ctx.state === 'suspended') {
+        // Chrome/Edge can hand back a suspended context even right after a
+        // click, if enough async work (the permission prompt) happened in
+        // between and ate the "user gesture" window. A suspended context
+        // still accepts node graph wiring without error, but every analyser
+        // reads back silence — which looks exactly like "the mic isn't
+        // picking up anything", with no exception anywhere to catch.
+        await ctx.resume();
+        // Read through an unknown cast — TS otherwise keeps `ctx.state`
+        // narrowed to the literal 'suspended' from the check above across
+        // the await, since it has no way to know resume() changes it.
+        const stateAfterResume = ctx.state as unknown as AudioContextState;
+        console.log('[jarvis-call] AudioContext resumed, state now:', stateAfterResume);
+        if (stateAfterResume !== 'running') {
+          console.error('[jarvis-call] AudioContext would not resume — mic analysis will not work');
+          useCallStore.getState().setError('Audio engine blocked by the browser — click the core again');
+        }
+      }
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
@@ -409,6 +456,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
   const end = useCallback(() => {
     activeRef.current = false;
+    forceStopRef.current = null;
     stopLevelLoop();
     useTtsStore.getState().stop();
     streamRef.current?.getTracks().forEach((t) => t.stop());
