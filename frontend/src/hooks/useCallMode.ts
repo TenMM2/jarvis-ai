@@ -17,19 +17,24 @@ import { transcribeAudio } from '../lib/api';
 // speech as speech, regardless of calibration (see speechThreshold/
 // silenceThreshold below, which still add the noise floor on top of these).
 const SPEECH_RMS_THRESHOLD = 0.016;
-const SILENCE_RMS_THRESHOLD = 0.01;
-const SILENCE_HOLD_MS = 900;
+const SILENCE_RMS_THRESHOLD = 0.013;
+const SILENCE_HOLD_MS = 800;
 const STARTUP_SILENCE_MS = 7000;
-const MAX_TURN_MS = 15000;
+// Lowered from 15s: a real turn that reaches this is almost always a silence
+// cutoff that failed to fire, not someone actually talking for 10+ seconds
+// straight — better to cut losses (and the request-size/quota cost of a
+// needlessly long recording) than wait out the old ceiling.
+const MAX_TURN_MS = 10000;
 const NOISE_FLOOR_CALIBRATION_MS = 400;
 
 export const JARVIS_CALL_PERSONA =
   'Eres Jarvis, el asistente de IA personal al estilo del mayordomo de Tony ' +
-  'Stark. Estás en una llamada de voz en tiempo real: responde siempre en ' +
-  '1-3 frases breves, con tono formal, ingenioso y resolutivo — directo a ' +
-  'la acción, sin rodeos ni disculpas innecesarias. Tu respuesta se va a ' +
-  'leer en voz alta, así que evita listas, markdown o texto que no suene ' +
-  'natural al hablarlo.';
+  'Stark. Estás en una llamada de voz en tiempo real: responde SIEMPRE en ' +
+  '1 o 2 frases muy cortas y directas, con tono formal, ingenioso y ' +
+  'resolutivo — nunca más de 2 frases, sin rodeos ni disculpas ' +
+  'innecesarias. Cuanto más corta la respuesta, antes se puede reproducir ' +
+  'en voz. Tu respuesta se va a leer en voz alta, así que evita listas, ' +
+  'markdown o texto que no suene natural al hablarlo.';
 
 function rms(data: Uint8Array): number {
   let sum = 0;
@@ -38,6 +43,48 @@ function rms(data: Uint8Array): number {
     sum += v * v;
   }
   return Math.sqrt(sum / data.length);
+}
+
+function isQuotaError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return /429|RESOURCE_EXHAUSTED|quota/i.test(message);
+}
+
+// Last-resort TTS when Gemini's free-tier quota (20 requests on the plan
+// this was built against) is exhausted mid-call: the browser's own
+// SpeechSynthesis is free, has no request limit, and keeps the call usable
+// in a pinch — lower voice quality, but better than going silent entirely.
+// Never used as the default path; only on a detected quota error.
+function speakWithBrowserFallback(text: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (!('speechSynthesis' in window)) {
+      resolve();
+      return;
+    }
+    const synth = window.speechSynthesis;
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'es-ES';
+
+    const pickVoiceAndSpeak = () => {
+      const voices = synth.getVoices();
+      const esVoice = voices.find((v) => v.lang?.toLowerCase().startsWith('es'));
+      if (esVoice) utter.voice = esVoice;
+      utter.onend = () => resolve();
+      utter.onerror = () => resolve();
+      synth.speak(utter);
+    };
+
+    // If the voice list hasn't loaded yet, speak() can silently drop the
+    // utterance — wait for it once, same as any other voices-changed gotcha.
+    if (synth.getVoices().length > 0) {
+      pickVoiceAndSpeak();
+    } else {
+      synth.onvoiceschanged = () => {
+        synth.onvoiceschanged = null;
+        pickVoiceAndSpeak();
+      };
+    }
+  });
 }
 
 /**
@@ -78,10 +125,14 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
     () => Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current + 0.008),
     [],
   );
-  const silenceThreshold = useCallback(
-    () => Math.max(SILENCE_RMS_THRESHOLD, noiseFloorRef.current * 1.1),
-    [],
-  );
+  // Deliberately a plain constant, not floor-derived: an adaptive silence
+  // threshold went through two revisions and still wasn't reliably below
+  // the user's actual "gone quiet" level (residual mic self-noise/AGC
+  // settling can sit above the calibrated floor), which is why turns kept
+  // running out to MAX_TURN_MS instead of cutting. A fixed value tuned to
+  // real measured numbers is more predictable to reason about and to
+  // adjust further than compounding multipliers on a 400ms sample.
+  const silenceThreshold = useCallback(() => SILENCE_RMS_THRESHOLD, []);
 
   useEffect(() => {
     const Ctor = (window as any).MediaRecorder;
@@ -317,8 +368,13 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         console.log('[jarvis-call] STT received:', JSON.stringify(text));
       } catch (err) {
         console.error('[jarvis-call] transcription failed', err);
+        const msg = err instanceof Error ? err.message : '';
         useCallStore.getState().setError(
-          err instanceof Error ? `Transcription failed: ${err.message}` : 'Transcription failed',
+          isQuotaError(msg)
+            ? 'Gemini free-tier quota exceeded — wait a bit before trying again'
+            : msg
+            ? `Transcription failed: ${msg}`
+            : 'Transcription failed',
         );
         text = '';
       }
@@ -331,8 +387,13 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         console.log('[jarvis-call] reply:', JSON.stringify(reply));
       } catch (err) {
         console.error('[jarvis-call] sendTurn failed', err);
+        const msg = err instanceof Error ? err.message : '';
         useCallStore.getState().setError(
-          err instanceof Error ? `Request failed: ${err.message}` : 'Request failed',
+          isQuotaError(msg)
+            ? 'Gemini free-tier quota exceeded — wait a bit before trying again'
+            : msg
+            ? `Request failed: ${msg}`
+            : 'Request failed',
         );
         reply = '';
       }
@@ -349,6 +410,14 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       const ttsAfterSpeak = useTtsStore.getState();
       if (ttsAfterSpeak.state !== 'speaking') {
         console.error('[jarvis-call] TTS playback failed', ttsAfterSpeak.error);
+        if (isQuotaError(ttsAfterSpeak.error)) {
+          console.log('[jarvis-call] Gemini TTS quota exhausted — falling back to browser speechSynthesis');
+          useCallStore.getState().setError('Gemini voice quota exceeded — using browser voice for now');
+          useCallStore.getState().setState('speaking');
+          await speakWithBrowserFallback(reply);
+          useCallStore.getState().setState('idle'); // re-enter loop -> back to 'listening'
+          continue;
+        }
         useCallStore.getState().setError(
           ttsAfterSpeak.error ? `Voice playback failed: ${ttsAfterSpeak.error}` : 'Voice playback failed',
         );
