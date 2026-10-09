@@ -126,7 +126,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
     analyser.fftSize = 512;
     source.connect(analyser);
     source.connect(ctx.destination); // keep audio audible through this graph
-    const data = new Uint8Array(analyser.frequencyBinCount);
+    const data = new Uint8Array(analyser.fftSize);
 
     const tick = () => {
       if (!activeRef.current || useTtsStore.getState().state !== 'speaking') {
@@ -172,7 +172,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
       const analyser = analyserRef.current;
       if (!analyser) return; // no mic graph — fall back to natural end only
-      const data = new Uint8Array(analyser.frequencyBinCount);
+      const data = new Uint8Array(analyser.fftSize);
       let speechFrames = 0;
       const tick = () => {
         if (settled || !activeRef.current) return;
@@ -224,7 +224,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       let hasSpoken = false;
       let silenceSince: number | null = null;
       const startedAt = Date.now();
-      const data = new Uint8Array(analyser.frequencyBinCount);
+      const data = new Uint8Array(analyser.fftSize);
       const speechCutoff = speechThreshold();
       const silenceCutoff = silenceThreshold();
       let lastLevelLogAt = 0;
@@ -376,18 +376,34 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       // echoCancellation matters a lot more here than in turn-based mode:
       // with barge-in, Jarvis's own voice coming back through the speakers
       // and into the mic can otherwise trigger a false self-interruption.
-      // noiseSuppression/autoGainControl are deliberately left off: on at
-      // least one real setup they flattened the mic signal enough that
-      // actual speech never crossed the fixed RMS threshold below, and the
-      // call just looked "stuck" on LISTENING forever.
+      // (Reports of flat-zero levels turned out not to be caused by
+      // noiseSuppression/autoGainControl — see the track/AudioContext
+      // diagnostics logged right below instead.)
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       console.log('[jarvis-call] microphone permission granted');
+      for (const track of stream.getAudioTracks()) {
+        // Flat-zero levels with no error anywhere usually trace back to one
+        // of these: readyState !== 'live' (track already dead), enabled ===
+        // false, or label pointing at the wrong input device entirely (e.g.
+        // Windows handing the browser a silent "Stereo Mix"/virtual device
+        // instead of the real mic).
+        console.log('[jarvis-call] audio track:', {
+          label: track.label,
+          enabled: track.enabled,
+          readyState: track.readyState,
+          muted: track.muted,
+          settings: track.getSettings(),
+        });
+        track.onmute = () => console.warn('[jarvis-call] track muted:', track.label);
+        track.onunmute = () => console.log('[jarvis-call] track unmuted:', track.label);
+        track.onended = () => console.error('[jarvis-call] track ended unexpectedly:', track.label);
+      }
       streamRef.current = stream;
       const ctx = new AudioContext();
       audioCtxRef.current = ctx;
-      console.log('[jarvis-call] AudioContext state:', ctx.state);
+      console.log('[jarvis-call] AudioContext state:', ctx.state, 'sampleRate:', ctx.sampleRate);
       if (ctx.state === 'suspended') {
         // Chrome/Edge can hand back a suspended context even right after a
         // click, if enough async work (the permission prompt) happened in
@@ -416,7 +432,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       // real speech, so the speech/silence thresholds adapt instead of
       // relying on a constant tuned on someone else's machine.
       await new Promise<void>((resolve) => {
-        const data = new Uint8Array(analyser.frequencyBinCount);
+        const data = new Uint8Array(analyser.fftSize);
         const samples: number[] = [];
         const startedAt = performance.now();
         const sample = () => {
