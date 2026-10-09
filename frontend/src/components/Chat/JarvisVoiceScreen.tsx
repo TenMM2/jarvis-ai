@@ -118,6 +118,7 @@ export function JarvisVoiceScreen({ fullViewport = false, onHangUp, showExitToTe
   const level = useCallStore((s) => s.level);
   const isActive = useCallStore((s) => s.isActive);
   const error = useCallStore((s) => s.error);
+  const micLabel = useCallStore((s) => s.micLabel);
   const theme = useAppStore((s) => s.settings.hudTheme);
   const setTheme = (t: HudTheme) => useAppStore.getState().updateSettings({ hudTheme: t });
   const accent = error ? '#ff4444' : theme === 'blue' ? '#00d2ff' : '#ffaa00';
@@ -159,6 +160,7 @@ export function JarvisVoiceScreen({ fullViewport = false, onHangUp, showExitToTe
           {statusLabel}
         </div>
         <LevelBars level={state === 'idle' ? 0 : level} color={accent} />
+        {micLabel && <div className="mt-3 max-w-[180px] opacity-60" style={{ fontSize: 9 }}>MIC: {micLabel}</div>}
       </div>
 
       {/* Right HUD panel */}

@@ -17,6 +17,8 @@ interface CallStore {
    * see useCallMode), shown in the HUD instead of silently doing nothing.
    * Cleared automatically at the start of the next successful turn. */
   error: string | null;
+  /** Label of the input device actually in use, for the HUD. */
+  micLabel: string;
   controls: CallControls;
   setControls: (controls: CallControls) => void;
   setState: (state: CallState) => void;
@@ -24,6 +26,7 @@ interface CallStore {
   setActive: (active: boolean) => void;
   setSupported: (supported: boolean) => void;
   setError: (error: string | null) => void;
+  setMicLabel: (label: string) => void;
 }
 
 const noop = () => {};
@@ -39,6 +42,7 @@ export const useCallStore = create<CallStore>((set) => ({
   isActive: false,
   supported: true,
   error: null,
+  micLabel: '',
   controls: { start: noop, end: noop },
   setControls: (controls) => set({ controls }),
   setState: (state) => set({ state }),
@@ -46,4 +50,5 @@ export const useCallStore = create<CallStore>((set) => ({
   setActive: (isActive) => set({ isActive }),
   setSupported: (supported) => set({ supported }),
   setError: (error) => set({ error }),
+  setMicLabel: (micLabel) => set({ micLabel }),
 }));
