@@ -17,13 +17,24 @@ export const isTauri = () => typeof window !== 'undefined' && !!window.__TAURI_I
 export type CloudKeyStatus = Record<string, boolean>;
 
 export async function getCloudKeyStatus(): Promise<CloudKeyStatus> {
-  if (!isTauri()) return {};
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const rows = await invoke<Array<{ key: string; set: boolean }>>('get_cloud_key_status');
+      return Object.fromEntries(rows.map((row) => [row.key, row.set]));
+    } catch (e: any) {
+      throw new Error(e?.message ?? e ?? 'Failed to read cloud key status');
+    }
+  }
+  // Browser (non-desktop) mode: ask the running server which keys it has
+  // from its own environment / cloud-keys.env — there is no desktop secure
+  // storage to read from here.
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    const rows = await invoke<Array<{ key: string; set: boolean }>>('get_cloud_key_status');
-    return Object.fromEntries(rows.map((row) => [row.key, row.set]));
-  } catch (e: any) {
-    throw new Error(e?.message ?? e ?? 'Failed to read cloud key status');
+    const res = await apiFetch(`/v1/cloud/key-status`);
+    if (!res.ok) return {};
+    return await res.json();
+  } catch {
+    return {};
   }
 }
 

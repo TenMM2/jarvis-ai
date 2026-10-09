@@ -57,9 +57,8 @@ const CLOUD_PROVIDERS: CloudProvider[] = [
     name: 'Google',
     envKey: 'GEMINI_API_KEY',
     models: [
-      { id: 'gemini-2.5-pro', desc: 'Gemini 2.5 Pro — flagship' },
-      { id: 'gemini-2.5-flash', desc: 'Gemini 2.5 Flash — fast' },
-      { id: 'gemini-3-pro', desc: 'Gemini 3 Pro — latest' },
+      { id: 'gemini-3.8-flash', desc: 'Gemini 3.8 Flash — fast, works on the free tier' },
+      { id: 'gemini-3.8-pro', desc: 'Gemini 3.8 Pro — most capable (needs billing enabled)' },
     ],
   },
   {
@@ -110,17 +109,15 @@ export function CommandPalette() {
   const desktopKeyStorage = isTauri();
 
   const refreshCloudKeyStatus = useCallback(async () => {
-    if (!desktopKeyStorage) {
-      setCloudKeyStatus({});
-      return;
-    }
+    // In browser (non-desktop) mode this now asks the server which keys it
+    // has from its own environment — getCloudKeyStatus() handles the split.
     try {
       setCloudKeyStatus(await getCloudKeyStatus());
       setCloudKeyError(null);
     } catch (e: any) {
       setCloudKeyError(e?.message || 'Failed to read cloud key status');
     }
-  }, [desktopKeyStorage]);
+  }, []);
 
   const filtered = tab === 'installed'
     ? (query
