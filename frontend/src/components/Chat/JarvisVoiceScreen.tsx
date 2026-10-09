@@ -5,9 +5,9 @@ import { useAppStore } from '../../lib/store';
 
 const CAPTION_BY_STATE: Record<string, string> = {
   idle: 'TAP TO CONNECT',
-  listening: 'LISTENING',
-  thinking: 'PROCESSING',
-  speaking: 'SPEAKING',
+  listening: 'LISTENING...',
+  thinking: 'THINKING...',
+  speaking: 'SPEAKING...',
 };
 
 /** A handful of bars whose heights fan out from `level` — a cheap stand-in
@@ -44,9 +44,11 @@ export function JarvisVoiceScreen({ fullViewport = false, onHangUp, showExitToTe
   const state = useCallStore((s) => s.state);
   const level = useCallStore((s) => s.level);
   const isActive = useCallStore((s) => s.isActive);
+  const error = useCallStore((s) => s.error);
   const theme = useAppStore((s) => s.settings.hudTheme);
   const setTheme = (t: HudTheme) => useAppStore.getState().updateSettings({ hudTheme: t });
-  const accent = theme === 'blue' ? '#00d2ff' : '#ffaa00';
+  const accent = error ? '#ff4444' : theme === 'blue' ? '#00d2ff' : '#ffaa00';
+  const statusLabel = error ? `ERROR: ${error}` : CAPTION_BY_STATE[state] ?? 'IDLE';
 
   const handleCoreClick = () => {
     if (isActive) {
@@ -78,8 +80,8 @@ export function JarvisVoiceScreen({ fullViewport = false, onHangUp, showExitToTe
         style={{ color: accent, opacity: 0.7 }}
       >
         <div className="mb-2">STATUS</div>
-        <div className="mb-3" style={{ opacity: 0.9, fontSize: 12 }}>
-          {CAPTION_BY_STATE[state] ?? 'IDLE'}
+        <div className="mb-3 max-w-[180px]" style={{ opacity: 0.9, fontSize: error ? 10 : 12 }}>
+          {statusLabel}
         </div>
         <LevelBars level={state === 'idle' ? 0 : level} color={accent} />
       </div>
@@ -98,7 +100,7 @@ export function JarvisVoiceScreen({ fullViewport = false, onHangUp, showExitToTe
           <JarvisReactor state={state} level={level} theme={theme} size={fullViewport ? 150 : 180} />
         </div>
         <p className="text-[11px] font-mono tracking-widest" style={{ color: accent, opacity: 0.5 }}>
-          {isActive ? 'TAP CORE TO DISCONNECT' : 'TAP CORE TO CONNECT'}
+          {isActive ? 'TAP CORE TO DISCONNECT' : error ? 'TAP CORE TO RETRY' : 'TAP CORE TO CONNECT'}
         </p>
         {showExitToText && !isActive && (
           <button

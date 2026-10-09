@@ -225,10 +225,16 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
   const loop = useCallback(async () => {
     while (activeRef.current) {
+      console.log('[jarvis-call] listening...');
       useCallStore.getState().setState('listening');
+      useCallStore.getState().setError(null);
       const blob = await recordTurn();
       if (!activeRef.current) break;
-      if (!blob) continue; // nothing said — keep listening
+      if (!blob) {
+        console.log('[jarvis-call] nothing heard — still listening');
+        continue; // nothing said — keep listening
+      }
+      console.log('[jarvis-call] turn captured', { bytes: blob.size });
 
       useCallStore.getState().setState('thinking');
       useCallStore.getState().setLevel(0);
@@ -236,7 +242,12 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       try {
         const result = await transcribeAudio(blob);
         text = result.text?.trim() ?? '';
-      } catch {
+        console.log('[jarvis-call] transcribed:', JSON.stringify(text));
+      } catch (err) {
+        console.error('[jarvis-call] transcription failed', err);
+        useCallStore.getState().setError(
+          err instanceof Error ? `Transcription failed: ${err.message}` : 'Transcription failed',
+        );
         text = '';
       }
       if (!activeRef.current) break;
@@ -245,14 +256,32 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       let reply = '';
       try {
         reply = (await sendTurnRef.current(text)) ?? '';
-      } catch {
+        console.log('[jarvis-call] reply:', JSON.stringify(reply));
+      } catch (err) {
+        console.error('[jarvis-call] sendTurn failed', err);
+        useCallStore.getState().setError(
+          err instanceof Error ? `Request failed: ${err.message}` : 'Request failed',
+        );
         reply = '';
       }
       if (!activeRef.current) break;
       if (!reply) continue;
 
       useCallStore.getState().setState('speaking');
+      console.log('[jarvis-call] speaking...');
+      // speak() never throws — on failure it swallows the error into its own
+      // store and leaves state as 'idle' instead of 'speaking'. Check that
+      // directly rather than try/catch, otherwise a synthesis failure looks
+      // exactly like "Jarvis just didn't say anything" with no clue why.
       await useTtsStore.getState().speak('call-reply', reply);
+      const ttsAfterSpeak = useTtsStore.getState();
+      if (ttsAfterSpeak.state !== 'speaking') {
+        console.error('[jarvis-call] TTS playback failed', ttsAfterSpeak.error);
+        useCallStore.getState().setError(
+          ttsAfterSpeak.error ? `Voice playback failed: ${ttsAfterSpeak.error}` : 'Voice playback failed',
+        );
+        continue;
+      }
       // speak() resolves once playback *starts*, not once it ends — that's
       // exactly when the <audio> element exists and can be tapped.
       monitorPlaybackLevel();
@@ -270,6 +299,14 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
   const start = useCallback(async () => {
     if (activeRef.current) return;
+    console.log('[jarvis-call] start() — requesting microphone permission');
+    useCallStore.getState().setError(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.error('[jarvis-call] getUserMedia unavailable (insecure context or unsupported browser)');
+      useCallStore.getState().setError('Microphone API unavailable in this browser/context');
+      useCallStore.getState().setSupported(false);
+      return;
+    }
     try {
       // echoCancellation matters a lot more here than in turn-based mode:
       // with barge-in, Jarvis's own voice coming back through the speakers
@@ -277,6 +314,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      console.log('[jarvis-call] microphone permission granted');
       streamRef.current = stream;
       const ctx = new AudioContext();
       audioCtxRef.current = ctx;
@@ -288,7 +326,18 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       activeRef.current = true;
       useCallStore.getState().setActive(true);
       void loop();
-    } catch {
+    } catch (err) {
+      console.error('[jarvis-call] getUserMedia failed', err);
+      const name = err instanceof DOMException ? err.name : '';
+      const message =
+        name === 'NotAllowedError'
+          ? 'Microphone permission denied — allow it in the browser address bar and tap again'
+          : name === 'NotFoundError'
+          ? 'No microphone found'
+          : err instanceof Error
+          ? err.message
+          : 'Could not access the microphone';
+      useCallStore.getState().setError(message);
       useCallStore.getState().setActive(false);
       useCallStore.getState().setSupported(false);
     }
