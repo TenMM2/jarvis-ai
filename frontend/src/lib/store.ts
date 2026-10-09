@@ -118,6 +118,8 @@ interface Settings {
   // switch back from the HUD's own toggle; this just persists that choice.
   voiceHudMode: boolean;
   hudTheme: 'blue' | 'amber';
+  // Chosen input device for calls ('' = browser/OS default).
+  micDeviceId: string;
 }
 
 function loadSettings(): Settings {
@@ -136,6 +138,7 @@ function loadSettings(): Settings {
     wakeWordEnabled: false,
     voiceHudMode: true,
     hudTheme: 'blue',
+    micDeviceId: '',
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);

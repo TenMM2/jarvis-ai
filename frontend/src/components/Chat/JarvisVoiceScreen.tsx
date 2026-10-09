@@ -1,4 +1,5 @@
-import { Palette } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Palette, Mic } from 'lucide-react';
 import { JarvisReactor, type HudTheme } from './JarvisReactor';
 import { useCallStore } from '../../lib/call';
 import { useAppStore } from '../../lib/store';
@@ -28,6 +29,78 @@ function LevelBars({ level, color }: { level: number; color: string }) {
           }}
         />
       ))}
+    </div>
+  );
+}
+
+
+/** Lists input devices and saves the chosen one. Chrome follows the OS
+ * default input, which on many laptops is a weak array mic (or a virtual
+ * device) rather than the one the user actually wants. */
+function MicPicker({ accent }: { accent: string }) {
+  const [open, setOpen] = useState(false);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const selected = useAppStore((s) => s.settings.micDeviceId);
+  const callActive = useCallStore((s) => s.isActive);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        let list = await navigator.mediaDevices.enumerateDevices();
+        // Labels are blank until the page has mic permission — ask once.
+        if (list.some((d) => d.kind === 'audioinput' && !d.label)) {
+          const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+          tmp.getTracks().forEach((t) => t.stop());
+          list = await navigator.mediaDevices.enumerateDevices();
+        }
+        if (!cancelled) setDevices(list.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'communications'));
+      } catch (err) {
+        console.error('[jarvis-call] could not list microphones', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const choose = (id: string) => {
+    useAppStore.getState().updateSettings({ micDeviceId: id });
+    setOpen(false);
+    if (callActive) useCallStore.getState().controls.end();
+  };
+
+  return (
+    <div className="absolute top-4 left-4">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="p-2 rounded-full cursor-pointer"
+        style={{ color: accent, opacity: 0.6, background: 'transparent', border: `1px solid ${accent}` }}
+        title="Choose microphone"
+      >
+        <Mic size={14} />
+      </button>
+      {open && (
+        <div
+          className="mt-2 rounded-lg p-2 font-mono text-[11px] max-w-[320px]"
+          style={{ background: '#050505', border: `1px solid ${accent}`, color: accent }}
+        >
+          {[{ deviceId: '', label: 'System default' } as Pick<MediaDeviceInfo, 'deviceId' | 'label'>, ...devices].map((d) => (
+            <button
+              key={d.deviceId || 'default'}
+              onClick={() => choose(d.deviceId)}
+              className="block w-full text-left px-2 py-1 rounded cursor-pointer"
+              style={{
+                background: selected === d.deviceId ? 'rgba(255,255,255,0.12)' : 'transparent',
+                color: accent,
+                border: 'none',
+              }}
+            >
+              {d.label || 'Microphone'}
+            </button>
+          ))}
+          <div className="px-2 pt-1 opacity-50">Reconnect the call after changing.</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -64,6 +137,8 @@ export function JarvisVoiceScreen({ fullViewport = false, onHangUp, showExitToTe
       className={fullViewport ? 'fixed inset-0' : 'absolute inset-0'}
       style={{ background: '#000', zIndex: fullViewport ? 1000 : undefined }}
     >
+      <MicPicker accent={accent} />
+
       {/* Color scheme toggle */}
       <button
         onClick={() => setTheme(theme === 'blue' ? 'amber' : 'blue')}
