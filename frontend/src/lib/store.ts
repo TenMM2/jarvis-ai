@@ -15,7 +15,7 @@ import type {
   TokenUsage,
 } from '../types';
 import type { ManagedAgent } from './api';
-import { isEmbedOnlyModel } from './model-capabilities';
+import { isEmbedOnlyModel, isDirectCloudModel } from './model-capabilities';
 import { serializeToolCallArguments } from './tool-call';
 
 export interface CachedConnector {
@@ -506,6 +506,7 @@ export const useAppStore = create<AppState>((set, get) => {
           !!state.selectedModel && isEmbedOnlyModel(state.selectedModel);
         const currentMissing =
           !!state.selectedModel &&
+          !isDirectCloudModel(state.selectedModel) &&
           !models.some((m) => m.id === state.selectedModel);
 
         if (!state.selectedModel || currentIsBad || currentMissing) {
