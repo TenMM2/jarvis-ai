@@ -801,6 +801,26 @@ export function SettingsPage() {
                 />
               </button>
             </SettingRow>
+            <SettingRow label="Wake word (&quot;Jarvis&quot;)" description="Listen continuously in the browser for the word 'Jarvis', then speak a greeting and start recording your request — hands-free. Requires Speech-to-Text and Text-to-Speech enabled above.">
+              <button
+                onClick={() => { updateSettings({ wakeWordEnabled: !settings.wakeWordEnabled }); showSaved(); }}
+                disabled={!settings.speechEnabled || !settings.voiceOutputEnabled}
+                className="relative w-11 h-6 rounded-full transition-colors cursor-pointer"
+                style={{
+                  background: settings.wakeWordEnabled && settings.speechEnabled && settings.voiceOutputEnabled ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
+                  opacity: settings.speechEnabled && settings.voiceOutputEnabled ? 1 : 0.4,
+                  cursor: settings.speechEnabled && settings.voiceOutputEnabled ? 'pointer' : 'default',
+                }}
+              >
+                <span
+                  className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform bg-white"
+                  style={{
+                    transform: settings.wakeWordEnabled && settings.speechEnabled && settings.voiceOutputEnabled ? 'translateX(20px)' : 'translateX(0)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </SettingRow>
             <SettingRow label="Text-to-Speech" description="Show a read-aloud button on assistant replies">
               <button
                 onClick={() => { updateSettings({ voiceOutputEnabled: !settings.voiceOutputEnabled }); showSaved(); }}

@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router';
 import { MessageBubble } from './MessageBubble';
 import { InputArea } from './InputArea';
 import { StreamingDots } from './StreamingDots';
+import { JarvisCore } from './JarvisCore';
 import { useAppStore } from '../../lib/store';
 import { shouldAutoplayFinishedReply, useTtsStore } from '../../lib/tts';
 import { stripThinkTags } from '../../lib/message-text';
-import { Sparkles, PanelRightOpen, PanelRightClose, Database, MessageSquare, X } from 'lucide-react';
+import { PanelRightOpen, PanelRightClose, Database, MessageSquare, X } from 'lucide-react';
 import { listConnectors } from '../../lib/connectors-api';
 
 function getGreeting(): string {
@@ -28,6 +29,7 @@ export function ChatArea() {
   const wasStreaming = useRef(false);
   const lastScrollTop = useRef(0);
   const isCurrentChatStreaming = streamState.isStreaming && streamState.conversationId === activeId;
+  const heroTtsState = useTtsStore((s) => s.state);
 
   // Autoplay: speak a reply once it is finished, never while it streams -- a
   // partial sentence would be synthesized and then cut off by the next chunk.
@@ -182,11 +184,15 @@ export function ChatArea() {
       >
         {isEmpty ? (
           <div className="flex flex-col items-center justify-center h-full px-4">
-            <div
-              className="w-12 h-12 rounded-2xl flex items-center justify-center mb-4"
-              style={{ background: 'var(--color-accent-subtle)', color: 'var(--color-accent)' }}
-            >
-              <Sparkles size={24} />
+            <div className="mb-4">
+              <JarvisCore
+                size={64}
+                state={
+                  isCurrentChatStreaming ? 'thinking'
+                  : heroTtsState === 'speaking' || heroTtsState === 'loading' ? 'speaking'
+                  : 'idle'
+                }
+              />
             </div>
             <h2 className="text-xl font-semibold mb-2" style={{ color: 'var(--color-text)' }}>
               {getGreeting()}
