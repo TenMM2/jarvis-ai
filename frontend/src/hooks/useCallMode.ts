@@ -59,6 +59,50 @@ function readRms(analyser: AnalyserNode, buf: Float32Array<ArrayBuffer>): number
 // scale it up (clamped) so the visuals actually move.
 const toDisplayLevel = (raw: number) => Math.min(1, raw * 12);
 
+
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const str = (o: number, t: string) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const x = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+/**
+ * Whisper can't make out speech recorded at a tiny level (a weak laptop
+ * array mic peaks around 0.004 and comes back as "... ..."). Decode the
+ * recorded turn, and if its loudest sample is quiet, scale it up so the
+ * peak sits near 0.7 before sending it — capped so pure silence isn't
+ * blown up into loud noise. Returns the original blob if decoding fails or
+ * it was already loud enough.
+ */
+async function normalizeTurn(blob: Blob, ctx: AudioContext | null): Promise<{ blob: Blob; filename: string; gain: number }> {
+  const original = { blob, filename: 'recording.webm', gain: 1 };
+  if (!ctx) return original;
+  try {
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const data = decoded.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > peak) peak = a; }
+    if (peak < 0.0005 || peak >= 0.25) return original;
+    const gain = Math.min(100, 0.7 / peak);
+    const out = new Float32Array(data.length);
+    for (let i = 0; i < data.length; i++) out[i] = data[i] * gain;
+    return { blob: encodeWav(out, decoded.sampleRate), filename: 'recording.wav', gain };
+  } catch (err) {
+    console.warn('[jarvis-call] could not normalize turn, sending as recorded', err);
+    return original;
+  }
+}
+
 function isQuotaError(message: string | null | undefined): boolean {
   if (!message) return false;
   return /429|RESOURCE_EXHAUSTED|quota/i.test(message);
@@ -373,7 +417,9 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       useCallStore.getState().setLevel(0);
       let text = '';
       try {
-        const result = await transcribeAudio(blob);
+        const prepared = await normalizeTurn(blob, audioCtxRef.current);
+        if (prepared.gain > 1) console.log('[jarvis-call] quiet mic — boosted turn by', prepared.gain.toFixed(1) + 'x before STT');
+        const result = await transcribeAudio(prepared.blob, prepared.filename);
         text = result.text?.trim() ?? '';
         console.log('[jarvis-call] STT received:', JSON.stringify(text));
       } catch (err) {
