@@ -9,6 +9,7 @@ import { AgentsPage } from './pages/AgentsPage';
 import { DataSourcesPage } from './pages/DataSourcesPage';
 import { LogsPage } from './pages/LogsPage';
 import { CommandPalette } from './components/CommandPalette';
+import { CallOverlay } from './components/Chat/CallOverlay';
 import { SetupScreen } from './components/SetupScreen';
 import { Toaster } from './components/ui/sonner';
 import { useAppStore } from './lib/store';
@@ -217,6 +218,7 @@ export default function App() {
         </Route>
       </Routes>
       <Toaster position="bottom-right" />
+      <CallOverlay />
       {commandPaletteOpen && <CommandPalette />}
       {optInModalOpen && (
         <OptInModal onClose={() => setOptInModalOpen(false)} />

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useCallStore } from '../lib/call';
-import { useTtsStore } from '../lib/tts';
+import { useTtsStore, getActiveAudioElement } from '../lib/tts';
 import { transcribeAudio } from '../lib/api';
 
 // Mirrors the CLI's record_until_silence (speech/voice_io.py): wait for
@@ -59,6 +59,43 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       rafRef.current = null;
     }
   }, []);
+
+  // While Jarvis's reply plays, tap an analyser onto the *actual* TTS audio
+  // element so the core's "speaking" animation tracks the real voice output
+  // instead of a fixed-rhythm CSS pulse — same idea as the mic-level loop in
+  // recordTurn(), just wired to playback instead of capture. Each turn gets a
+  // fresh <audio> element (see lib/tts.ts), so a fresh source node per call
+  // is correct, not a leak of a reused one.
+  const monitorPlaybackLevel = useCallback(() => {
+    const ctx = audioCtxRef.current;
+    const el = getActiveAudioElement();
+    if (!ctx || !el) return;
+
+    let source: MediaElementAudioSourceNode;
+    try {
+      source = ctx.createMediaElementSource(el);
+    } catch {
+      return; // already tapped (shouldn't happen — new element per turn)
+    }
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    source.connect(ctx.destination); // keep audio audible through this graph
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    const tick = () => {
+      if (!activeRef.current || useTtsStore.getState().state !== 'speaking') {
+        stopLevelLoop();
+        useCallStore.getState().setLevel(0);
+        source.disconnect();
+        return;
+      }
+      analyser.getByteTimeDomainData(data);
+      useCallStore.getState().setLevel(Math.min(1, rms(data) * 4));
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    tick();
+  }, [stopLevelLoop]);
 
   // Records one utterance on the call's shared mic stream. Resolves with a
   // Blob once speech was heard and then paused, or null if nothing was said
@@ -162,7 +199,9 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
       useCallStore.getState().setState('speaking');
       await useTtsStore.getState().speak('call-reply', reply);
-      // speak() resolves once playback *starts*, not once it ends.
+      // speak() resolves once playback *starts*, not once it ends — that's
+      // exactly when the <audio> element exists and can be tapped.
+      monitorPlaybackLevel();
       await new Promise<void>((resolve) => {
         if (useTtsStore.getState().state !== 'speaking') {
           resolve();
@@ -176,7 +215,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         });
       });
     }
-  }, [recordTurn]);
+  }, [recordTurn, monitorPlaybackLevel]);
 
   const start = useCallback(async () => {
     if (activeRef.current) return;

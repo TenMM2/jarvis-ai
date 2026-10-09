@@ -36,9 +36,13 @@ const ANIMATION_BY_STATE: Record<JarvisCoreState, string> = {
  */
 export function JarvisCore({ state, size = 80, level, onClick, callActive }: JarvisCoreProps) {
   const ringSize = size * 1.45;
-  const liveReactive = state === 'listening' && typeof level === 'number';
-  const coreScale = liveReactive ? 1 + Math.min(level!, 1) * 0.35 : undefined;
-  const coreBrightness = liveReactive ? 1 + Math.min(level!, 1) * 0.6 : undefined;
+  const liveReactive = (state === 'listening' || state === 'speaking') && typeof level === 'number';
+  const l = liveReactive ? Math.min(level!, 1) : 0;
+  // Slightly different X/Y scale (not a uniform scale()) so the core reads as
+  // organically deforming with the sound rather than just growing evenly.
+  const coreScaleX = liveReactive ? 1 + l * 0.32 : undefined;
+  const coreScaleY = liveReactive ? 1 + l * 0.42 : undefined;
+  const coreBrightness = liveReactive ? 1 + l * 0.6 : undefined;
 
   const core = (
     <div
@@ -69,7 +73,7 @@ export function JarvisCore({ state, size = 80, level, onClick, callActive }: Jar
             'radial-gradient(circle at 35% 30%, rgba(255,255,255,0.35), var(--color-accent) 55%, var(--color-accent-hover) 100%)',
           boxShadow: `0 0 ${size * 0.35}px ${size * 0.12}px var(--color-accent-glow)`,
           animation: liveReactive ? 'none' : ANIMATION_BY_STATE[state],
-          transform: liveReactive ? `scale(${coreScale})` : undefined,
+          transform: liveReactive ? `scale(${coreScaleX}, ${coreScaleY})` : undefined,
           filter: liveReactive ? `brightness(${coreBrightness})` : undefined,
           transition: liveReactive ? 'transform 60ms linear, filter 60ms linear' : undefined,
         }}

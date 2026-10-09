@@ -1,184 +1,98 @@
-<div align="center">
-  <img alt="OpenJarvis" src="assets/OpenJarvis_Horizontal_Logo.png" width="400">
+# Jarvis — Asistente de IA personal (TFG)
 
-  <p><i>Personal AI, On Personal Devices.</i></p>
+Proyecto de Fin de Grado: un asistente de IA personal con voz, estilo Jarvis,
+construido sobre [OpenJarvis](https://github.com/open-jarvis/OpenJarvis)
+(Apache 2.0). Usa **Google Gemini** como motor de IA (texto, voz nativa de
+entrada/salida) y se conecta a Gmail y Google Calendar para gestionar correo
+y reuniones (con Google Meet) por voz o por chat.
 
-  <p>
-    <a href="https://arxiv.org/abs/2605.17172"><img src="https://img.shields.io/badge/arXiv-2605.17172-b31b1b.svg" alt="arXiv"></a>
-    <a href="https://openjarvis.stanford.edu/"><img src="https://img.shields.io/badge/project-OpenJarvis-blue" alt="Project"></a>
-    <a href="https://open-jarvis.github.io/OpenJarvis/"><img src="https://img.shields.io/badge/docs-mkdocs-blue" alt="Docs"></a>
-    <img src="https://img.shields.io/badge/python-%3E%3D3.10-blue" alt="Python">
-    <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License">
-    <a href="https://discord.gg/CMVBmDQ5Fj"><img src="https://img.shields.io/badge/discord-join-7289da?logo=discord&logoColor=white" alt="Discord"></a>
-    <a href="https://x.com/OpenJarvisAI"><img src="https://img.shields.io/badge/X-@OpenJarvisAI-black?logo=x&logoColor=white" alt="X / Twitter"></a>
-  </p>
-</div>
+## Qué incluye
 
----
+- **Chat de texto y llamada de voz manos libres**: pulsa el núcleo azul para
+  iniciar una llamada continua con detección real de silencios (no hay que
+  pulsar nada entre turnos), con una interfaz de pantalla completa en negro
+  mientras estás en la llamada.
+- **Palabra de activación** ("Jarvis") opcional, detectada en el navegador
+  sin coste de API.
+- **Voz nativa de Gemini** tanto para entender audio (STT) como para hablar
+  (TTS) — no se usan servicios de voz de terceros.
+- **Gmail**: buscar correos, leer hilos, listar no leídos, enviar correos.
+- **Google Calendar**: ver eventos de hoy, buscar eventos, próxima reunión,
+  crear eventos con enlace de Google Meet.
 
-<div align="center">
-  <img alt="OpenJarvis demo reel" src="assets/openjarvis_demo_reel.webp" width="75%">
-</div>
+## Requisitos previos
 
----
+- [Python 3.10–3.13](https://www.python.org/) y [uv](https://docs.astral.sh/uv/)
+  (gestor de paquetes de Python: `pip install uv` o `winget install astral-sh.uv`).
+- [Node.js 18+](https://nodejs.org/) para el frontend.
+- Una **clave de API de Gemini** gratuita en
+  [Google AI Studio](https://aistudio.google.com/apikey).
+- (Opcional) Credenciales OAuth de Google Cloud si quieres usar Gmail/Calendar
+  — ver más abajo.
 
-> **[Documentation](https://open-jarvis.github.io/OpenJarvis/)**
->
-> **[Project Site](https://openjarvis.stanford.edu/)**
->
-> **[Paper](https://arxiv.org/abs/2605.17172)**
->
-> **[Leaderboard](https://open-jarvis.github.io/OpenJarvis/leaderboard/)**
->
-> **[Roadmap](https://open-jarvis.github.io/OpenJarvis/development/roadmap/)**
-
-## Why OpenJarvis?
-
-Personal AI agents are exploding in popularity, but nearly all of them still route intelligence through cloud APIs. Your "personal" AI continues to depend on someone else's server. At the same time, our [Intelligence Per Watt](https://www.intelligence-per-watt.ai/) research showed that local language models already handle 88.7% of single-turn chat and reasoning queries, with intelligence efficiency improving 5.3× from 2023 to 2025. The models and hardware are increasingly ready. What has been missing is the software stack to make local-first personal AI practical.
-
-OpenJarvis is that stack. It is a framework for local-first personal AI, built around three core ideas: shared primitives for building on-device agents; evaluations that treat energy, FLOPs, latency, and dollar cost as first-class constraints alongside accuracy; and a learning loop that improves models using local trace data. The goal is simple: make it possible to build personal AI agents that run locally by default, calling the cloud only when truly necessary. OpenJarvis aims to be both a research platform and a production foundation for local AI, in the spirit of PyTorch.
-
-## Installation
-
-Pick your platform and run one command. Each installer handles [uv](https://docs.astral.sh/uv/), the Python venv, Ollama, and a starter model — about 3 minutes on broadband.
-
-| Platform | One-liner |
-|---|---|
-| **macOS · Linux · WSL2** | `curl -fsSL https://open-jarvis.github.io/OpenJarvis/install.sh \| bash` |
-| **Native Windows** | `irm https://open-jarvis.github.io/OpenJarvis/install.ps1 \| iex` |
-| **Desktop GUI** | Download `.exe` / `.dmg` / `.deb` / `.rpm` / `.AppImage` from the [latest release](https://github.com/open-jarvis/OpenJarvis/releases) |
-
-Then `jarvis` to start. The Rust extension and larger models continue downloading in the background; `jarvis doctor` shows status.
-
-Platform-specific notes (WSL2 setup, native-Windows scheduled-task service, desktop prerequisites, manual / contributor install): see the [installation docs](https://open-jarvis.github.io/OpenJarvis/getting-started/install/).
-
-## Quick Start
+## Instalación
 
 ```bash
-jarvis                          # start chatting (default: chat-simple)
-jarvis gui                      # start the graphical browser interface
-jarvis init --preset <name> --force  # replace config with a starter preset
+git clone https://github.com/TenMM2/jarvis-ai.git
+cd jarvis-ai
+
+# Backend (instala OpenJarvis en modo editable)
+uv pip install -e .
+
+# Frontend
+cd frontend
+npm install
+cd ..
 ```
 
-`jarvis gui` starts the local API server and frontend, then opens the graphical
-chat interface in your default browser. It requires Node.js 22+ and is
-available from a source checkout; packaged desktop installers are available
-from the [latest release](https://github.com/open-jarvis/OpenJarvis/releases).
+## Configuración
 
-> Prefix `jarvis ...` with `uv run`, or `source .venv/bin/activate` first.
+1. Copia `.env.example` a `.env` y pega tu clave de Gemini:
 
-| Preset | What it does |
-|---|---|
-| `morning-digest-mac` / `morning-digest-linux` / `morning-digest-minimal` | Spoken daily briefing from email, calendar, health, news |
-| `deep-research` | Multi-hop research across indexed docs with citations |
-| `code-assistant` | Agent with code execution, file I/O, and shell access |
-| `scheduled-monitor` | Stateful agent on a schedule with memory |
-| `chat-simple` | Lightweight conversation, no tools |
+   ```bash
+   cp .env.example .env
+   ```
 
-Example:
+   ```
+   GEMINI_API_KEY=tu_clave_aqui
+   ```
+
+   El archivo `.env` nunca se sube al repositorio (ver `.gitignore`).
+
+2. (Primera vez) revisa que `~/.openjarvis/config.toml` tenga Gemini como
+   motor por defecto. Si no existe, `jarvis` lo crea con valores por defecto
+   la primera vez que arrancas.
+
+## Arranque
 
 ```bash
-jarvis init --preset morning-digest-mac --force
-jarvis connect gdrive          # one OAuth covers Gmail / Calendar / Tasks
-jarvis digest --fresh          # generate and play your first briefing
+jarvis gui
 ```
 
-Per-preset deep dives: [morning digest](https://open-jarvis.github.io/OpenJarvis/user-guide/morning-digest/) · [deep research](https://open-jarvis.github.io/OpenJarvis/user-guide/deep-research/) · [code assistant](https://open-jarvis.github.io/OpenJarvis/user-guide/code-assistant/) · [scheduled monitor](https://open-jarvis.github.io/OpenJarvis/user-guide/scheduled-monitor/) · [chat simple](https://open-jarvis.github.io/OpenJarvis/user-guide/chat-simple/) · or the full [quickstart guide](https://open-jarvis.github.io/OpenJarvis/getting-started/quickstart/).
+Esto levanta el backend (`http://127.0.0.1:8000`) y el frontend
+(`http://127.0.0.1:5173`) y abre el navegador automáticamente. Al abrir, la
+app detecta la clave de Gemini del servidor y selecciona el modelo en la nube
+sin pasos adicionales.
 
-### Skills
+## Conectar Gmail y Calendar (opcional)
 
-Skills teach agents how to better use tools and improve their reasoning. Every skill is a tool — agents discover them from a catalog and invoke them on demand.
+1. Crea un proyecto en [Google Cloud Console](https://console.cloud.google.com/),
+   habilita las APIs de Gmail y Calendar, y crea credenciales OAuth de tipo
+   "App de escritorio".
+2. Ejecuta:
 
-```bash
-# Install skills from public sources
-jarvis skill install hermes:arxiv
-jarvis skill sync hermes --category research
+   ```bash
+   jarvis connect gmail
+   ```
 
-# Use skills with any agent
-jarvis ask "Use the code-explainer skill to explain this Python code: for i in range(5): print(i*2)"
+   Pega el Client ID y Client Secret cuando se te pidan; se abrirá el
+   navegador para autorizar el acceso. La misma autorización cubre también
+   Calendar.
 
-# Optimize skills from your trace history
-jarvis optimize skills --policy dspy
+## Licencia y procedencia
 
-# Benchmark the impact
-jarvis bench skills --max-samples 5 --seeds 42
-```
-
-Import from [Hermes Agent](https://github.com/NousResearch/hermes-agent) (~150 skills), [OpenClaw](https://github.com/openclaw/skills) (~13,700 community skills), or any GitHub repo. Skills follow the [agentskills.io](https://agentskills.io/specification) open standard.
-
-See the [Skills User Guide](https://open-jarvis.github.io/OpenJarvis/user-guide/skills/) and [Skills Tutorial](https://open-jarvis.github.io/OpenJarvis/tutorials/skills-workflow/) for details.
-
-### Built-in Agents
-
-OpenJarvis ships with eight built-in agents across three execution modes (on-demand, scheduled, continuous):
-
-| Agent | Type | What it does |
-|-------|------|-------------|
-| `morning_digest` | Scheduled | Daily briefing from email, calendar, health, news — with TTS audio |
-| `deep_research` | On-demand | Multi-hop research with citations across web and local docs |
-| `monitor_operative` | Continuous | Long-horizon monitoring with memory, compression, and retrieval |
-| `orchestrator` | On-demand | Multi-turn reasoning with automatic tool selection |
-| `native_react` | On-demand | ReAct (Thought-Action-Observation) loop agent |
-| `operative` | Continuous | Persistent autonomous agent with state management |
-| `native_openhands` | On-demand | CodeAct — generates and executes Python code |
-| `simple` | On-demand | Single-turn chat, no tools |
-
-See the [User Guide](https://open-jarvis.github.io/OpenJarvis/user-guide/morning-digest/) and [Tutorials](https://open-jarvis.github.io/OpenJarvis/tutorials/) for detailed setup instructions.
-
-Full documentation — including Docker deployment, cloud engines, development setup, and tutorials — at **[open-jarvis.github.io/OpenJarvis](https://open-jarvis.github.io/OpenJarvis/)**.
-
-## Community
-
-- **GitHub:** [github.com/open-jarvis/OpenJarvis](https://github.com/open-jarvis/OpenJarvis)
-- **Discord:** [discord.gg/CMVBmDQ5Fj](https://discord.gg/CMVBmDQ5Fj)
-- **X / Twitter:** [@OpenJarvisAI](https://x.com/OpenJarvisAI)
-- **Docs:** [open-jarvis.github.io/OpenJarvis](https://open-jarvis.github.io/OpenJarvis/)
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](CONTRIBUTING.md) for incentives, contribution types, and the PR process.
-
-Quick start for contributors:
-
-```bash
-git clone https://github.com/open-jarvis/OpenJarvis.git
-cd OpenJarvis
-uv sync --extra dev
-uv run pre-commit install
-uv run pytest tests/ -v
-```
-
-Browse the [Roadmap](https://open-jarvis.github.io/OpenJarvis/development/roadmap/) for areas where help is needed. Comment **"take"** on any issue to get auto-assigned.
-
-## About
-
-OpenJarvis is part of [Intelligence Per Watt](https://www.intelligence-per-watt.ai/), a research initiative studying the intelligence efficiency of AI systems. The project is developed at [Hazy Research](https://hazyresearch.stanford.edu/) and the [Scaling Intelligence Lab](https://scalingintelligence.stanford.edu/) at [Stanford SAIL](https://ai.stanford.edu/).
-
-## Sponsors
-
-<p>
-  <a href="https://www.laude.org/">Laude Institute</a> &bull;
-  <a href="https://datascience.stanford.edu/marlowe">Stanford Marlowe</a> &bull;
-  <a href="https://cloud.google.com/">Google Cloud Platform</a> &bull;
-  <a href="https://lambda.ai/">Lambda Labs</a> &bull;
-  <a href="https://ollama.com/">Ollama</a> &bull;
-  <a href="https://research.ibm.com/">IBM Research</a> &bull;
-  <a href="https://hai.stanford.edu/">Stanford HAI</a>
-</p>
-
-## Citation
-```bibtex
-@misc{saadfalcon2026openjarvispersonalaipersonal,
-      title={OpenJarvis: Personal AI, On Personal Devices}, 
-      author={Jon Saad-Falcon and Avanika Narayan and Robby Manihani and Tanvir Bhathal and Herumb Shandilya and Hakki Orhun Akengin and Gabriel Bo and Andrew Park and Matthew Hart and Caia Costello and Chuan Li and Christopher Ré and Azalia Mirhoseini},
-      year={2026},
-      eprint={2605.17172},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2605.17172}, 
-}
-```
-
-## License
-
-[Apache 2.0](LICENSE)
+Este proyecto parte de [OpenJarvis](https://github.com/open-jarvis/OpenJarvis),
+publicado bajo licencia **Apache 2.0** (ver [LICENSE](LICENSE)). Se mantiene
+dicha licencia; las modificaciones de este repositorio (integración de
+Gemini, voz nativa, herramientas de Gmail/Calendar, interfaz de llamada,
+etc.) son obra propia para este Proyecto de Fin de Grado.
