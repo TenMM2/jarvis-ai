@@ -43,6 +43,10 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const rafRef = useRef<number | null>(null);
+  // Separate rAF handle for the barge-in watcher, which runs concurrently
+  // with monitorPlaybackLevel's loop (both active while state === 'speaking')
+  // and must not cancel each other via a shared ref.
+  const bargeRafRef = useRef<number | null>(null);
   const sendTurnRef = useRef(sendTurn);
   sendTurnRef.current = sendTurn;
 
@@ -96,6 +100,56 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
     };
     tick();
   }, [stopLevelLoop]);
+
+  // Barge-in: while Jarvis is speaking, keep watching the *mic* (not the
+  // playback analyser) for the user starting to talk over it. On the first
+  // sustained bit of speech, resolve 'bargein' so the loop can cut TTS
+  // immediately and go straight back to listening — "if I start talking,
+  // Jarvis shuts up". Requires a few consecutive frames above threshold so
+  // a single click/pop in the mic doesn't trigger a false interrupt.
+  const waitForSpeakEndOrBargeIn = useCallback((): Promise<'ended' | 'bargein'> => {
+    return new Promise((resolve) => {
+      if (useTtsStore.getState().state !== 'speaking') {
+        resolve('ended');
+        return;
+      }
+      let settled = false;
+      const finish = (result: 'ended' | 'bargein') => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        if (bargeRafRef.current !== null) {
+          cancelAnimationFrame(bargeRafRef.current);
+          bargeRafRef.current = null;
+        }
+        resolve(result);
+      };
+
+      const unsubscribe = useTtsStore.subscribe((s) => {
+        if (s.state !== 'speaking') finish('ended');
+      });
+
+      const analyser = analyserRef.current;
+      if (!analyser) return; // no mic graph — fall back to natural end only
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      let speechFrames = 0;
+      const tick = () => {
+        if (settled || !activeRef.current) return;
+        analyser.getByteTimeDomainData(data);
+        if (rms(data) * 4 > SPEECH_RMS_THRESHOLD) {
+          speechFrames += 1;
+          if (speechFrames > 2) {
+            finish('bargein');
+            return;
+          }
+        } else {
+          speechFrames = 0;
+        }
+        bargeRafRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    });
+  }, []);
 
   // Records one utterance on the call's shared mic stream. Resolves with a
   // Blob once speech was heard and then paused, or null if nothing was said
@@ -202,25 +256,27 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       // speak() resolves once playback *starts*, not once it ends — that's
       // exactly when the <audio> element exists and can be tapped.
       monitorPlaybackLevel();
-      await new Promise<void>((resolve) => {
-        if (useTtsStore.getState().state !== 'speaking') {
-          resolve();
-          return;
-        }
-        const unsubscribe = useTtsStore.subscribe((s) => {
-          if (s.state !== 'speaking') {
-            unsubscribe();
-            resolve();
-          }
-        });
-      });
+      const result = await waitForSpeakEndOrBargeIn();
+      if (result === 'bargein') {
+        useTtsStore.getState().stop(); // cut Jarvis off immediately
+        useCallStore.getState().setLevel(0);
+      }
+      // Either way, loop back to 'listening' next iteration — on a natural
+      // end that's the normal turn-taking; on a barge-in it's the point of
+      // the feature (the words spoken during the cut itself aren't
+      // captured, only what follows, same as most hands-free assistants).
     }
-  }, [recordTurn, monitorPlaybackLevel]);
+  }, [recordTurn, monitorPlaybackLevel, waitForSpeakEndOrBargeIn]);
 
   const start = useCallback(async () => {
     if (activeRef.current) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // echoCancellation matters a lot more here than in turn-based mode:
+      // with barge-in, Jarvis's own voice coming back through the speakers
+      // and into the mic can otherwise trigger a false self-interruption.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       streamRef.current = stream;
       const ctx = new AudioContext();
       audioCtxRef.current = ctx;
