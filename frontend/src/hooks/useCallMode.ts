@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useCallStore } from '../lib/call';
 import { useTtsStore, getActiveAudioElement } from '../lib/tts';
 import { transcribeAudio } from '../lib/api';
+import { useAppStore } from '../lib/store';
 
 // Mirrors the CLI's record_until_silence (speech/voice_io.py): wait for
 // speech to start, then cut the turn once it's been quiet for a bit.
@@ -123,6 +124,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
   // is treated as a complete, valid utterance even if it never crossed the
   // speech threshold.
   const forceStopRef = useRef<(() => void) | null>(null);
+  const lastPeakRef = useRef(0);
   const sendTurnRef = useRef(sendTurn);
   sendTurnRef.current = sendTurn;
   // Ambient noise floor measured fresh for each call (see calibrateNoiseFloor
@@ -267,6 +269,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         return;
       }
 
+      let peakLevel = 0;
       const recorder = new MediaRecorder(stream);
       const chunks: Blob[] = [];
       let gotSpeech = false;
@@ -274,6 +277,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         if (e.data.size > 0) chunks.push(e.data);
       };
       recorder.onstop = () => {
+        lastPeakRef.current = peakLevel;
         stopLevelLoop();
         forceStopRef.current = null;
         resolve(
@@ -290,7 +294,6 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       const speechCutoff = speechThreshold();
       const silenceCutoff = silenceThreshold();
       let lastLevelLogAt = 0;
-      let peakLevel = 0;
       console.log('[jarvis-call] recording turn — thresholds', {
         speech: speechCutoff.toFixed(5),
         floor: noiseFloorRef.current.toFixed(5),
@@ -358,7 +361,6 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
     while (activeRef.current) {
       console.log('[jarvis-call] listening...');
       useCallStore.getState().setState('listening');
-      useCallStore.getState().setError(null);
       const blob = await recordTurn();
       if (!activeRef.current) break;
       if (!blob) {
@@ -387,7 +389,14 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
         text = '';
       }
       if (!activeRef.current) break;
-      if (!text) continue;
+      if (!/\p{L}/u.test(text)) {
+        // Empty or just "... ..." — Whisper's answer to silence/near-silence.
+        if (lastPeakRef.current < 0.01) {
+          useCallStore.getState().setError('Mic signal too weak — pick another microphone (mic icon) or raise the input volume in Windows');
+        }
+        continue;
+      }
+      useCallStore.getState().setError(null);
 
       let reply = '';
       try {
@@ -464,9 +473,20 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
       // (Reports of flat-zero levels turned out not to be caused by
       // noiseSuppression/autoGainControl — see the track/AudioContext
       // diagnostics logged right below instead.)
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      const processing = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+      const wantedDevice = useAppStore.getState().settings.micDeviceId;
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: wantedDevice ? { ...processing, deviceId: { exact: wantedDevice } } : processing,
+        });
+      } catch (err) {
+        // The saved device may be unplugged — fall back to the OS default
+        // rather than failing the whole call.
+        if (!wantedDevice || !(err instanceof DOMException) || err.name !== 'OverconstrainedError') throw err;
+        console.warn('[jarvis-call] saved microphone unavailable, using default');
+        stream = await navigator.mediaDevices.getUserMedia({ audio: processing });
+      }
       console.log('[jarvis-call] microphone permission granted');
       for (const track of stream.getAudioTracks()) {
         // Flat-zero levels with no error anywhere usually trace back to one
