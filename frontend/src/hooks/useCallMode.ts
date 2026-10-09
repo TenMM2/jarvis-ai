@@ -12,8 +12,12 @@ import { transcribeAudio } from '../lib/api';
 // survive different mics/gain/room noise: a value tuned on one machine
 // silently never triggered on another (recordTurn would just time out every
 // 7s with "nothing heard", which looks identical to the call being stuck).
-const SPEECH_RMS_THRESHOLD = 0.035;
-const SILENCE_RMS_THRESHOLD = 0.02;
+// Lowered from 0.035/0.02 after a real user's actual speaking level measured
+// only 0.0208–0.0263 on their mic — the old fixed threshold simply never saw
+// speech as speech, regardless of calibration (see speechThreshold/
+// silenceThreshold below, which still add the noise floor on top of these).
+const SPEECH_RMS_THRESHOLD = 0.016;
+const SILENCE_RMS_THRESHOLD = 0.01;
 const SILENCE_HOLD_MS = 900;
 const STARTUP_SILENCE_MS = 7000;
 const MAX_TURN_MS = 15000;
@@ -66,12 +70,16 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
   // constants, so a noisier room or a hotter mic gain doesn't just silently
   // never trigger speech detection.
   const noiseFloorRef = useRef(0.01);
+  // Additive margin over the floor rather than a multiplier: on a quiet
+  // mic the floor is near zero and multiplying it changes nothing (exactly
+  // the bug just fixed), whereas a fixed margin still raises the bar in an
+  // actually noisy room.
   const speechThreshold = useCallback(
-    () => Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current * 2.5),
+    () => Math.max(SPEECH_RMS_THRESHOLD, noiseFloorRef.current + 0.008),
     [],
   );
   const silenceThreshold = useCallback(
-    () => Math.max(SILENCE_RMS_THRESHOLD, noiseFloorRef.current * 1.4),
+    () => Math.max(SILENCE_RMS_THRESHOLD, noiseFloorRef.current * 1.1),
     [],
   );
 
@@ -279,7 +287,7 @@ export function useCallMode(sendTurn: (text: string) => Promise<string>) {
 
       recorder.start();
       forceStopRef.current = () => {
-        console.log('[jarvis-call] manual force-send (Space) — sending whatever was captured');
+        console.log('[jarvis-call] forced send triggered via Space -> sending blob to Gemini STT');
         gotSpeech = true;
         if (recorder.state !== 'inactive') recorder.stop();
       };
