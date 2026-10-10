@@ -132,3 +132,9 @@ learning.db
 minion_logs/
 *.oj-debug.json
 oj-debug.*.json
+
+# Never commit OAuth/API secrets
+client_secret*.json
+credentials*.json
+*.token
+secrets/
