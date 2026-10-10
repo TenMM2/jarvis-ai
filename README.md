@@ -22,6 +22,12 @@ y reuniones (con Google Meet) por voz o por chat.
 - **Gmail**: buscar correos, leer hilos, listar no leídos, enviar correos.
 - **Google Calendar**: ver eventos de hoy, buscar eventos, próxima reunión,
   crear eventos con enlace de Google Meet.
+- **Abrir aplicaciones** (`open_app`): "abre Spotify", "abre Chrome en
+  youtube.com". Solo abre lo que tú apruebes en `~/.openjarvis/apps.json`
+  (sin shell, con validación estricta de URLs).
+- **Biblioteca de contenido** (`content_memory`), **análisis de vídeos**
+  (`analyze_video`, `find_viral_videos`, requieren `yt-dlp`, `ffmpeg` y una
+  clave de YouTube) y **Instagram de solo lectura** (token en `.env`).
 
 ## Requisitos previos
 
@@ -71,11 +77,31 @@ cd ..
    y `uv pip install kokoro pip`. Si no existe, `jarvis` lo crea con valores por defecto
    la primera vez que arrancas.
 
+## Aplicaciones permitidas
+
+Crea `~/.openjarvis/apps.json` con las aplicaciones que Jarvis puede abrir y
+añade `"open_app"` a `[tools] enabled` en `config.toml`:
+
+```json
+{
+  "chrome":  {"path": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+              "aliases": ["navegador"], "accepts_url": true},
+  "spotify": {"path": "C:/Users/TU_USUARIO/AppData/Local/Microsoft/WindowsApps/Spotify.exe"}
+}
+```
+
+Lo que no esté en la lista no se puede abrir.
+
 ## Arranque
 
 ```bash
 jarvis gui
 ```
+
+En Windows también puedes usar `start-jarvis.cmd` (carga el `.env` solo, ya
+que el servidor no lo lee), `start-jarvis-hidden.vbs` (sin ventana de consola)
+y `connect-gmail.cmd`. Con `JARVIS_GOOGLE_SCOPES=readonly` en el `.env`, Jarvis
+solo recibe permisos de lectura sobre Gmail/Calendar.
 
 Esto levanta el backend (`http://127.0.0.1:8000`) y el frontend
 (`http://127.0.0.1:5173`) y abre el navegador automáticamente. Al abrir, la

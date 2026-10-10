@@ -173,3 +173,23 @@ except ImportError:
     pass
 
 __all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]
+
+try:
+    import openjarvis.tools.instagram  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.open_app  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.content_memory  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.video_reference  # noqa: F401
+except ImportError:
+    pass

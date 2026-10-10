@@ -71,6 +71,24 @@ GOOGLE_ALL_SCOPES: List[str] = [
     "https://www.googleapis.com/auth/tasks.readonly",
 ]
 
+# Least-privilege modes via JARVIS_GOOGLE_SCOPES (default: all scopes above):
+#   readonly       Gmail, Calendar and Tasks read-only. No sending, trashing,
+#                  labelling or creating events.
+#   calendar-write Gmail and Tasks read-only, Calendar read+write (create and
+#                  edit events). Still no sending, trashing or labelling mail.
+_scope_mode = os.environ.get("JARVIS_GOOGLE_SCOPES", "").strip().lower()
+if _scope_mode in ("readonly", "calendar-write"):
+    GOOGLE_ALL_SCOPES = [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/calendar"
+        if _scope_mode == "calendar-write"
+        else "https://www.googleapis.com/auth/calendar.readonly",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/tasks.readonly",
+    ]
+
 OAUTH_PROVIDERS: Dict[str, OAuthProvider] = {
     "google": OAuthProvider(
         name="google",
