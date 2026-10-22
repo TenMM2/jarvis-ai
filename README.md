@@ -1,50 +1,48 @@
-# Jarvis — Asistente de IA personal
+# Jarvis — Personal AI Assistant
 
-Proyecto personal de portafolio: un asistente de IA con voz, estilo Jarvis,
-construido sobre [OpenJarvis](https://github.com/open-jarvis/OpenJarvis)
-(Apache 2.0). Usa **Google Gemini** como motor de IA (texto, voz nativa de
-entrada/salida) y se conecta a Gmail y Google Calendar para gestionar correo
-y reuniones (con Google Meet) por voz o por chat.
+A personal portfolio project: a voice-first, Jarvis-style AI assistant built on
+[OpenJarvis](https://github.com/open-jarvis/OpenJarvis) (Apache 2.0). It uses
+**Google Gemini** as its AI engine (text and voice) and connects to Gmail and
+Google Calendar to manage email and meetings (including Google Meet) by voice
+or chat.
 
-## Qué incluye
+## Features
 
-- **Chat de texto y llamada de voz manos libres**: pulsa el núcleo azul para
-  iniciar una llamada continua con detección real de silencios (no hay que
-  pulsar nada entre turnos), con una interfaz de pantalla completa en negro
-  mientras estás en la llamada.
-- **Palabra de activación** ("Jarvis") opcional, detectada en el navegador
-  sin coste de API.
-- **Voz**: el reconocimiento (STT) es local con faster-whisper (sin cuota de
-  API) y la síntesis (TTS) usa las voces de Gemini (p. ej. `Aoede`, `Kore`).
-  Si prefieres una voz 100 % local, cambia `tts_backend` a `kokoro`; la voz
-  del navegador queda como respaldo si el servicio se queda sin cuota.
-- **Gmail**: buscar correos, leer hilos, listar no leídos, enviar correos.
-- **Google Calendar**: ver eventos de hoy, buscar eventos, próxima reunión,
-  crear eventos con enlace de Google Meet.
-- **Abrir aplicaciones** (`open_app`): "abre Spotify", "abre Chrome en
-  youtube.com". Solo abre lo que tú apruebes en `~/.openjarvis/apps.json`
-  (sin shell, con validación estricta de URLs).
-- **Biblioteca de contenido** (`content_memory`), **análisis de vídeos**
-  (`analyze_video`, `find_viral_videos`, requieren `yt-dlp`, `ffmpeg` y una
-  clave de YouTube) y **Instagram de solo lectura** (token en `.env`).
+- **Text chat and hands-free voice calls**: click the blue core to start a
+  continuous call with real silence detection (no need to press anything
+  between turns), with a full-screen, black HUD-style interface during the call.
+- **Optional wake word** ("Jarvis"), detected in the browser at no API cost.
+- **Voice**: speech recognition (STT) runs locally with faster-whisper (no API
+  quota) and speech synthesis (TTS) uses Gemini voices (e.g. `Aoede`, `Kore`).
+  For a fully local voice, set `tts_backend` to `kokoro`; the browser voice is
+  used as a fallback if the service runs out of quota.
+- **Gmail**: search emails, read threads, list unread messages, send email.
+- **Google Calendar**: today's events, event search, next meeting, create
+  events with a Google Meet link.
+- **Open applications** (`open_app`): "open Spotify", "open Chrome on
+  youtube.com". It only opens what you approve in `~/.openjarvis/apps.json`
+  (no shell, strict URL validation).
+- **Content library** (`content_memory`), **video analysis** (`analyze_video`,
+  `find_viral_videos`; they require `yt-dlp`, `ffmpeg` and a YouTube API key)
+  and **read-only Instagram** (token in `.env`).
 
-## Requisitos previos
+## Prerequisites
 
-- [Python 3.10–3.13](https://www.python.org/) y [uv](https://docs.astral.sh/uv/)
-  (gestor de paquetes de Python: `pip install uv` o `winget install astral-sh.uv`).
-- [Node.js 18+](https://nodejs.org/) para el frontend.
-- Una **clave de API de Gemini** gratuita en
+- [Python 3.10–3.13](https://www.python.org/) and [uv](https://docs.astral.sh/uv/)
+  (Python package manager: `pip install uv` or `winget install astral-sh.uv`).
+- [Node.js 18+](https://nodejs.org/) for the frontend.
+- A free **Gemini API key** from
   [Google AI Studio](https://aistudio.google.com/apikey).
-- (Opcional) Credenciales OAuth de Google Cloud si quieres usar Gmail/Calendar
-  — ver más abajo.
+- (Optional) Google Cloud OAuth credentials if you want to use Gmail/Calendar
+  — see below.
 
-## Instalación
+## Installation
 
 ```bash
 git clone https://github.com/TenMM2/jarvis-ai.git
 cd jarvis-ai
 
-# Backend (instala OpenJarvis en modo editable)
+# Backend (installs OpenJarvis in editable mode)
 uv pip install -e .
 
 # Frontend
@@ -53,79 +51,80 @@ npm install
 cd ..
 ```
 
-## Configuración
+## Configuration
 
-1. Copia `.env.example` a `.env` y pega tu clave de Gemini:
+1. Copy `.env.example` to `.env` and paste your Gemini key:
 
    ```bash
    cp .env.example .env
    ```
 
    ```
-   GEMINI_API_KEY=tu_clave_aqui
+   GEMINI_API_KEY=your_key_here
    ```
 
-   El archivo `.env` nunca se sube al repositorio (ver `.gitignore`).
+   The `.env` file is never committed to the repository (see `.gitignore`).
 
-2. (Primera vez) revisa que `~/.openjarvis/config.toml` tenga Gemini como
-   motor por defecto y, en `[speech]`, `backend = "faster-whisper"` con
-   `model = "base"`, `device = "cpu"`, `compute_type = "int8"` (el modelo se
-   descarga solo la primera vez, ~150 MB) y `tts_backend = "kokoro"` con
-   `voice_id = "em_alex"`. Kokoro requiere `torch` (versión CPU) y `kokoro`:
+2. (First run) check that `~/.openjarvis/config.toml` has Gemini as the default
+   engine and, under `[speech]`, `backend = "faster-whisper"` with
+   `model = "base"`, `device = "cpu"`, `compute_type = "int8"` (the model is
+   downloaded automatically the first time, ~150 MB) and
+   `tts_backend = "gemini_tts"` with a voice such as `voice_id = "Aoede"`.
+   For a local voice, use `tts_backend = "kokoro"` instead; Kokoro requires
+   `torch` (CPU build) and `kokoro`:
    `uv pip install torch --index-url https://download.pytorch.org/whl/cpu`
-   y `uv pip install kokoro pip`. Si no existe, `jarvis` lo crea con valores por defecto
-   la primera vez que arrancas.
+   and `uv pip install kokoro pip`. If the file does not exist, `jarvis`
+   creates it with default values the first time you start it.
 
-## Aplicaciones permitidas
+## Allowed applications
 
-Crea `~/.openjarvis/apps.json` con las aplicaciones que Jarvis puede abrir y
-añade `"open_app"` a `[tools] enabled` en `config.toml`:
+Create `~/.openjarvis/apps.json` with the applications Jarvis may open and add
+`"open_app"` to `[tools] enabled` in `config.toml`:
 
 ```json
 {
   "chrome":  {"path": "C:/Program Files/Google/Chrome/Application/chrome.exe",
-              "aliases": ["navegador"], "accepts_url": true},
-  "spotify": {"path": "C:/Users/TU_USUARIO/AppData/Local/Microsoft/WindowsApps/Spotify.exe"}
+              "aliases": ["browser"], "accepts_url": true},
+  "spotify": {"path": "C:/Users/YOUR_USER/AppData/Local/Microsoft/WindowsApps/Spotify.exe"}
 }
 ```
 
-Lo que no esté en la lista no se puede abrir.
+Anything not on the list cannot be opened.
 
-## Arranque
+## Running
 
 ```bash
 jarvis gui
 ```
 
-En Windows también puedes usar `start-jarvis.cmd` (carga el `.env` solo, ya
-que el servidor no lo lee), `start-jarvis-hidden.vbs` (sin ventana de consola)
-y `connect-gmail.cmd`. Con `JARVIS_GOOGLE_SCOPES=readonly` en el `.env`, Jarvis
-solo recibe permisos de lectura sobre Gmail/Calendar.
+On Windows you can also use `start-jarvis.cmd` (loads `.env` automatically,
+since the server does not read it), `start-jarvis-hidden.vbs` (no console
+window) and `connect-gmail.cmd`. With `JARVIS_GOOGLE_SCOPES=readonly` in `.env`,
+Jarvis only gets read permissions on Gmail/Calendar.
 
-Esto levanta el backend (`http://127.0.0.1:8000`) y el frontend
-(`http://127.0.0.1:5173`) y abre el navegador automáticamente. Al abrir, la
-app detecta la clave de Gemini del servidor y selecciona el modelo en la nube
-sin pasos adicionales.
+This starts the backend (`http://127.0.0.1:8000`) and the frontend
+(`http://127.0.0.1:5173`) and opens the browser automatically. On startup, the
+app detects the server's Gemini key and selects the cloud model with no extra
+steps.
 
-## Conectar Gmail y Calendar (opcional)
+## Connect Gmail and Calendar (optional)
 
-1. Crea un proyecto en [Google Cloud Console](https://console.cloud.google.com/),
-   habilita las APIs de Gmail y Calendar, y crea credenciales OAuth de tipo
-   "App de escritorio".
-2. Ejecuta:
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/),
+   enable the Gmail and Calendar APIs, and create OAuth credentials of type
+   "Desktop app".
+2. Run:
 
    ```bash
    jarvis connect gmail
    ```
 
-   Pega el Client ID y Client Secret cuando se te pidan; se abrirá el
-   navegador para autorizar el acceso. La misma autorización cubre también
-   Calendar.
+   Paste the Client ID and Client Secret when prompted; the browser opens so
+   you can authorize access. The same authorization also covers Calendar.
 
-## Licencia y procedencia
+## License and provenance
 
-Este proyecto parte de [OpenJarvis](https://github.com/open-jarvis/OpenJarvis),
-publicado bajo licencia **Apache 2.0** (ver [LICENSE](LICENSE)). Se mantiene
-dicha licencia; las modificaciones de este repositorio (integración de
-Gemini, voz nativa, herramientas de Gmail/Calendar, interfaz de llamada,
-etc.) son obra propia de este proyecto de portafolio.
+This project is based on [OpenJarvis](https://github.com/open-jarvis/OpenJarvis),
+published under the **Apache 2.0** license (see [LICENSE](LICENSE)). That
+license is kept; the modifications in this repository (Gemini integration,
+voice, Gmail/Calendar tools, call interface, etc.) are original work for this
+portfolio project.
