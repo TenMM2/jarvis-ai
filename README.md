@@ -1,6 +1,6 @@
-# Jarvis — Asistente de IA personal 
+# Jarvis — Asistente de IA personal
 
-proyecto de portafolio: un asistente de IA personal con voz, estilo Jarvis,
+Proyecto personal de portafolio: un asistente de IA con voz, estilo Jarvis,
 construido sobre [OpenJarvis](https://github.com/open-jarvis/OpenJarvis)
 (Apache 2.0). Usa **Google Gemini** como motor de IA (texto, voz nativa de
 entrada/salida) y se conecta a Gmail y Google Calendar para gestionar correo
@@ -14,11 +14,10 @@ y reuniones (con Google Meet) por voz o por chat.
   mientras estás en la llamada.
 - **Palabra de activación** ("Jarvis") opcional, detectada en el navegador
   sin coste de API.
-- **Voz 100 % local**: el reconocimiento (STT) usa faster-whisper y la
-  síntesis (TTS) usa Kokoro (voz `em_alex`, español). Sin cuota de API ni
-  coste; Gemini solo se usa para pensar. Si prefieres la voz de Gemini,
-  cambia `tts_backend` a `gemini_tts`; la voz del navegador queda como
-  respaldo si ese servicio se queda sin cuota.
+- **Voz**: el reconocimiento (STT) es local con faster-whisper (sin cuota de
+  API) y la síntesis (TTS) usa las voces de Gemini (p. ej. `Aoede`, `Kore`).
+  Si prefieres una voz 100 % local, cambia `tts_backend` a `kokoro`; la voz
+  del navegador queda como respaldo si el servicio se queda sin cuota.
 - **Gmail**: buscar correos, leer hilos, listar no leídos, enviar correos.
 - **Google Calendar**: ver eventos de hoy, buscar eventos, próxima reunión,
   crear eventos con enlace de Google Meet.
@@ -129,4 +128,4 @@ Este proyecto parte de [OpenJarvis](https://github.com/open-jarvis/OpenJarvis),
 publicado bajo licencia **Apache 2.0** (ver [LICENSE](LICENSE)). Se mantiene
 dicha licencia; las modificaciones de este repositorio (integración de
 Gemini, voz nativa, herramientas de Gmail/Calendar, interfaz de llamada,
-etc.) son obra propia para este proyecto de portafolio.
+etc.) son obra propia de este proyecto de portafolio.
